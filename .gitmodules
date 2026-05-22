@@ -1,0 +1,3 @@
+[submodule "Homecam"]
+	path = Homecam
+	url = git@github.com:fntundi/Sentinel-Home.git
