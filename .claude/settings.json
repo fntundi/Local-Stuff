@@ -3,7 +3,11 @@
     "allow": [
       "Bash(git -C /data/GitHub/Home/Local-Stuff diff --stat HEAD)",
       "Bash(git -C /data/GitHub/Home/Local-Stuff status --short)",
-      "Bash(grep -A 20 \"# Sentinel-Home$\" /data/GitHub/Home/Local-Stuff/awx/inventory/group_vars/all.yml)"
+      "Bash(grep -A 20 \"# Sentinel-Home$\" /data/GitHub/Home/Local-Stuff/awx/inventory/group_vars/all.yml)",
+      "Bash(git -C /data/GitHub/Home/Local-Stuff remote -v)",
+      "Bash(git -C /data/GitHub/Home/Local-Stuff remote set-url origin git@github.com:fntundi/Local-Stuff.git)",
+      "Bash(git submodule *)",
+      "Bash(make help *)"
     ]
   }
 }
