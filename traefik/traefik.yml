@@ -1,0 +1,67 @@
+# Traefik v3 — Static Configuration
+# Gateway for: HomeCam | local-aistack | Sentinel-Home | AWX | Jenkins | GitLab | Authentik
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entrypoint: { to: websecure, scheme: https, permanent: false }
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        certResolver: letsencrypt
+  rtsp:
+    address: ":8554/tcp"
+  metrics:
+    address: ":8082"
+
+api:
+  dashboard: true
+  insecure: false
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    network: home-net
+    exposedByDefault: false
+    watch: true
+  file:
+    directory: "/etc/traefik/dynamic"
+    watch: true
+
+certificatesResolvers:
+  localcerts:
+    acme:
+      email: "fntundi@skywarditsolutions.com"
+      storage: "/letsencrypt/acme.json"
+      tlsChallenge: {}
+  letsencrypt:
+    acme:
+      email: "fntundi@skywarditsolutions.com"
+      storage: "/letsencrypt/acme-le.json"
+      httpChallenge:
+        entryPoint: web
+
+log:
+  level: INFO
+  format: json
+
+accessLog:
+  format: json
+  fields:
+    headers:
+      defaultMode: drop
+      names:
+        Authorization: redact
+
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addEntryPointsLabels: true
+    addServicesLabels: true

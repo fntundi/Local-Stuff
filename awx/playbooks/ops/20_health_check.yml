@@ -1,0 +1,73 @@
+---
+- name: Platform Health Check
+  hosts: home_servers
+  become: false
+  gather_facts: false
+
+  tasks:
+    - name: Check Docker daemon
+      ansible.builtin.command: docker info --format '{{ "{{" }}.ServerVersion{{ "}}" }}'
+      register: docker_ver
+      changed_when: false
+      tags: [docker]
+
+    - name: Check Traefik
+      ansible.builtin.uri:
+        url: "http://localhost:80"
+        status_code: [200, 301, 302, 404]
+        timeout: 5
+      register: traefik_check
+      tags: [traefik]
+
+    - name: Check Authentik
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ authentik_server_port }}/-/health/ready/"
+        status_code: 200
+        timeout: 5
+      register: authentik_check
+      ignore_errors: true
+      tags: [authentik]
+
+    - name: Check HomeCam backend
+      ansible.builtin.uri:
+        url: "http://localhost:{{ port_homecam_backend }}/api/health"
+        timeout: 5
+      register: homecam_check
+      tags: [homecam]
+
+    - name: Check AI Platform API
+      ansible.builtin.uri:
+        url: "http://localhost:{{ port_aistack_api }}/health"
+        timeout: 10
+      register: aistack_check
+      tags: [aistack]
+
+    - name: Check AI Platform OpenWebUI
+      ansible.builtin.uri:
+        url: "http://localhost:{{ port_aistack_openwebui }}"
+        status_code: [200, 301, 302]
+        timeout: 5
+      register: openwebui_check
+      tags: [aistack]
+
+    - name: List running Docker containers
+      ansible.builtin.command: docker ps --format "table {{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}\t{{ '{{' }}.Ports{{ '}}' }}"
+      register: containers
+      changed_when: false
+      tags: [docker]
+
+    - name: Health report
+      ansible.builtin.debug:
+        msg:
+          docker:    "{{ docker_ver.stdout | default('ERROR') }}"
+          traefik:   "{{ traefik_check.status | default('unreachable') }}"
+          authentik: "{{ authentik_check.status | default('unreachable') }}"
+          homecam:   "{{ homecam_check.status | default('unreachable') }}"
+          aistack_api: "{{ aistack_check.status | default('unreachable') }}"
+          openwebui: "{{ openwebui_check.status | default('unreachable') }}"
+      tags: [always]
+
+    - name: Running containers
+      ansible.builtin.debug:
+        msg: "{{ containers.stdout_lines }}"
+      tags: [docker]

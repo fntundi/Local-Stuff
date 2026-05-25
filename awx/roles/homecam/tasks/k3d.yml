@@ -1,0 +1,57 @@
+---
+- name: Check if k3d cluster exists
+  ansible.builtin.command: k3d cluster list -o json
+  register: k3d_list
+  changed_when: false
+
+- name: Create k3d cluster (sentinel-noc)
+  ansible.builtin.command: >
+    k3d cluster create {{ k3d_homecam_cluster }}
+    --port "{{ k3d_homecam_lb_http_port }}:80@loadbalancer"
+    --port "{{ k3d_homecam_lb_https_port }}:443@loadbalancer"
+    --port "{{ port_rtsp }}:{{ port_rtsp }}@loadbalancer"
+    --api-port 6550
+    --k3s-arg "--disable=traefik@server:0"
+    --network {{ shared_network }}
+  when: k3d_homecam_cluster not in (k3d_list.stdout | from_json | map(attribute='name') | list)
+  become_user: "{{ platform_user }}"
+
+- name: Build HomeCam images
+  community.docker.docker_image:
+    name: "{{ item.name }}"
+    build:
+      path: "{{ homecam_compose_dir }}/{{ item.context }}"
+      dockerfile: Dockerfile
+    source: build
+    state: present
+  loop:
+    - { name: "sentinel-backend:latest",  context: "backend"  }
+    - { name: "sentinel-frontend:latest", context: "frontend" }
+
+- name: Import images into k3d cluster
+  ansible.builtin.command: "k3d image import {{ item }} --cluster {{ k3d_homecam_cluster }}"
+  loop:
+    - sentinel-backend:latest
+    - sentinel-frontend:latest
+  become_user: "{{ platform_user }}"
+
+- name: Apply k8s manifests
+  kubernetes.core.k8s:
+    src: "{{ homecam_k8s_dir }}/{{ item }}"
+    kubeconfig: "{{ ansible_env.HOME }}/.kube/config"
+    state: present
+  loop:
+    - namespace.yaml
+    - configmap.yaml
+    - secrets.yaml
+    - mongodb/statefulset.yaml
+    - mongodb/service.yaml
+    - backend/deployment.yaml
+    - backend/service.yaml
+    - frontend/deployment.yaml
+    - frontend/service.yaml
+    - mediamtx/configmap.yaml
+    - mediamtx/deployment.yaml
+    - mediamtx/service.yaml
+    - network-policy.yaml
+  become_user: "{{ platform_user }}"

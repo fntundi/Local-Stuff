@@ -1,0 +1,37 @@
+---
+# Defaults for common role — override in group_vars or host_vars
+ssh_port: 22
+ssh_allow_password_auth: false
+ssh_allow_root_login: false
+vm_swappiness: 1
+fs_file_max: 1048576
+
+system_packages:
+  - git
+  - curl
+  - wget
+  - htop
+  - iotop
+  - jq
+  - python3
+  - python3-pip
+  - python3-venv
+  - build-essential
+  - ufw
+  - fail2ban
+  - unzip
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - net-tools
+  - openssl
+  - rsync
+  - tmux
+  - vim
+
+firewall_extra_tcp_ports: []
+
+trusted_networks:
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16

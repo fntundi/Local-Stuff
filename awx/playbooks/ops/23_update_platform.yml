@@ -1,0 +1,92 @@
+---
+- name: Update Platform (pull latest images + restart)
+  hosts: home_servers
+  become: false
+  gather_facts: true
+
+  vars:
+    # Set to true to skip approval step (for scheduled runs)
+    unattended: "{{ unattended_update | default(false) }}"
+
+  tasks:
+    - name: Update hub repository
+      ansible.builtin.git:
+        repo: "{{ repo_clone_url }}"
+        dest: "{{ platform_repo_root }}"
+        version: "{{ repo_branch }}"
+        recursive: true
+        update: true
+        accept_hostkey: true
+      tags: [repo]
+
+    - name: Pull latest Traefik images
+      community.docker.docker_compose_v2_pull:
+        project_src: "{{ platform_repo_root }}/traefik"
+        project_name: "{{ traefik_project_name }}"
+      tags: [traefik]
+
+    - name: Pull latest Authentik images
+      community.docker.docker_compose_v2_pull:
+        project_src: "{{ authentik_compose_dir }}"
+        project_name: "{{ authentik_project_name }}"
+      tags: [authentik]
+
+    - name: Pull latest HomeCam images
+      community.docker.docker_compose_v2_pull:
+        project_src: "{{ homecam_compose_dir }}"
+        project_name: homecam
+      when: homecam_deploy_strategy == 'compose'
+      tags: [homecam]
+
+    - name: Pull latest AI Platform images
+      community.docker.docker_compose_v2_pull:
+        project_src: "{{ aistack_compose_dir }}"
+        files:
+          - compose/docker-compose.yml
+          - compose/docker-compose.prod.yml
+        project_name: "{{ aistack_project_name }}"
+      when: aistack_deploy_strategy == 'compose'
+      tags: [aistack]
+
+    - name: Restart Traefik
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_repo_root }}/traefik"
+        project_name: "{{ traefik_project_name }}"
+        state: present
+        pull: never
+        recreate: always
+      tags: [traefik]
+
+    - name: Restart Authentik
+      community.docker.docker_compose_v2:
+        project_src: "{{ authentik_compose_dir }}"
+        project_name: "{{ authentik_project_name }}"
+        files:
+          - docker-compose.yml
+        state: present
+        pull: never
+        recreate: always
+      tags: [authentik]
+
+    - name: Restart HomeCam
+      community.docker.docker_compose_v2:
+        project_src: "{{ homecam_compose_dir }}"
+        project_name: homecam
+        state: present
+        pull: never
+        recreate: always
+      when: homecam_deploy_strategy == 'compose'
+      tags: [homecam]
+
+    - name: Restart AI Platform
+      community.docker.docker_compose_v2:
+        project_src: "{{ aistack_compose_dir }}"
+        files:
+          - compose/docker-compose.yml
+          - compose/docker-compose.prod.yml
+        project_name: "{{ aistack_project_name }}"
+        state: present
+        pull: never
+        recreate: always
+      when: aistack_deploy_strategy == 'compose'
+      tags: [aistack]

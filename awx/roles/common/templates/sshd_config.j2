@@ -1,0 +1,14 @@
+# Managed by Ansible — do not edit manually
+Port {{ ssh_port }}
+PermitRootLogin {{ 'yes' if ssh_allow_root_login else 'no' }}
+PasswordAuthentication {{ 'yes' if ssh_allow_password_auth else 'no' }}
+ChallengeResponseAuthentication no
+UsePAM yes
+X11Forwarding no
+PrintMotd no
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/openssh/sftp-server
+MaxAuthTries 3
+LoginGraceTime 30
+ClientAliveInterval 300
+ClientAliveCountMax 2

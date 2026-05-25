@@ -1,0 +1,19 @@
+---
+- name: Render Sentinel-Home .env
+  ansible.builtin.template:
+    src: sentinel-home.env.j2
+    dest: "{{ sentinel_compose_dir }}/.env"
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0600"
+  tags: [sentinel, config]
+
+- name: Deploy via Docker Compose
+  ansible.builtin.include_tasks: compose.yml
+  when: sentinel_deploy_strategy == 'compose'
+  tags: [sentinel, deploy]
+
+- name: Deploy via k3d
+  ansible.builtin.include_tasks: k3d.yml
+  when: sentinel_deploy_strategy == 'k8s'
+  tags: [sentinel, deploy]

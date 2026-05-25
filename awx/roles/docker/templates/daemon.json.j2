@@ -1,0 +1,10 @@
+{
+  "log-driver": "{{ docker_log_driver }}",
+  "log-opts": {
+    "max-size": "{{ docker_log_max_size }}",
+    "max-file": "{{ docker_log_max_file }}"
+  },
+  "data-root": "{{ docker_data_root }}",
+  "live-restore": true,
+  "userland-proxy": false
+}

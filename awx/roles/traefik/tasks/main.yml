@@ -1,0 +1,52 @@
+---
+- name: Create traefik env file
+  ansible.builtin.template:
+    src: traefik.env.j2
+    dest: "{{ platform_repo_root }}/traefik/.env"
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0600"
+  tags: [traefik, config]
+
+- name: Create Docker network home-net (idempotent)
+  community.docker.docker_network:
+    name: "{{ traefik_network }}"
+    driver: bridge
+    ipam_config:
+      - subnet: "{{ traefik_subnet }}"
+    state: present
+  tags: [traefik, network]
+
+- name: Start Traefik gateway
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_repo_root }}/traefik"
+    project_name: "{{ traefik_project_name }}"
+    files: ["docker-compose.yml"]
+    state: present
+    pull: missing
+  become_user: "{{ platform_user }}"
+  register: traefik_result
+  tags: [traefik, deploy]
+
+- name: Wait for Authentik to become ready
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ authentik_server_port }}/-/health/ready/"
+    status_code: 200
+    timeout: 10
+  register: authentik_ready
+  retries: 30
+  delay: 10
+  until: authentik_ready.status == 200
+  tags: [traefik, verify]
+
+- name: Wait for Traefik to be healthy
+  ansible.builtin.uri:
+    url: http://localhost/api/rawdata
+    status_code: [200, 401, 403]
+    timeout: 5
+  register: traefik_ready
+  retries: 12
+  delay: 5
+  until: traefik_ready.status in [200, 401, 403]
+  ignore_errors: true
+  tags: [traefik, verify]

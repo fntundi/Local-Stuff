@@ -1,0 +1,65 @@
+import jenkins.model.Jenkins
+import hudson.model.Node
+import hudson.slaves.DumbSlave
+import hudson.slaves.RetentionStrategy
+import hudson.plugins.sshslaves.SSHLauncher
+import hudson.plugins.sshslaves.verifiers.KnownHostsFileKeyVerificationStrategy
+import com.cloudbees.plugins.credentials.domains.Domain
+import com.cloudbees.plugins.credentials.CredentialsScope
+import com.cloudbees.plugins.credentials.SystemCredentialsProvider
+import com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey
+import com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey.DirectEntryPrivateKeySource
+
+def jenkins = Jenkins.instance
+def runnerName = System.getenv('JENKINS_RUNNER_NAME') ?: 'docker'
+def runnerHost = System.getenv('JENKINS_RUNNER_HOST') ?: '127.0.0.1'
+def runnerPort = (System.getenv('JENKINS_RUNNER_SSH_PORT') ?: '22') as Integer
+def runnerUser = System.getenv('JENKINS_RUNNER_USER') ?: 'jenkins'
+def runnerLabel = System.getenv('JENKINS_RUNNER_LABEL') ?: 'docker'
+def runnerRemoteFs = System.getenv('JENKINS_RUNNER_REMOTE_FS') ?: '/home/jenkins/agent'
+def runnerExecutors = (System.getenv('JENKINS_RUNNER_EXECUTORS') ?: '2') as Integer
+def privateKeyB64 = System.getenv('JENKINS_RUNNER_PRIVATE_KEY_B64')
+def privateKey = privateKeyB64 ? new String(privateKeyB64.decodeBase64(), 'UTF-8') : null
+def credentialsId = 'jenkins-runner-ssh-key'
+
+if (privateKey) {
+    def store = SystemCredentialsProvider.getInstance().getStore()
+    def existingCredentials = com.cloudbees.plugins.credentials.CredentialsProvider.lookupCredentials(
+        BasicSSHUserPrivateKey.class,
+        jenkins,
+        null,
+        null
+    ).find { it.id == credentialsId }
+
+    if (existingCredentials == null) {
+        def credential = new BasicSSHUserPrivateKey(
+            CredentialsScope.GLOBAL,
+            credentialsId,
+            runnerUser,
+            new DirectEntryPrivateKeySource(privateKey),
+            '',
+            'Jenkins runner SSH key managed by Ansible'
+        )
+        store.addCredentials(Domain.global(), credential)
+    }
+}
+
+def launcher = new SSHLauncher(runnerHost, runnerPort, credentialsId)
+launcher.sshHostKeyVerificationStrategy = new KnownHostsFileKeyVerificationStrategy()
+def existingNode = jenkins.getNode(runnerName)
+if (existingNode != null) {
+    jenkins.removeNode(existingNode)
+}
+
+def node = new DumbSlave(
+    runnerName,
+    'Jenkins runner managed by Ansible',
+    runnerRemoteFs,
+    "${runnerExecutors}",
+    Node.Mode.NORMAL,
+    runnerLabel,
+    launcher,
+    new RetentionStrategy.Always()
+)
+jenkins.addNode(node)
+jenkins.save()

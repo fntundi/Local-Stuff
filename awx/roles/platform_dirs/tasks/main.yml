@@ -1,0 +1,17 @@
+---
+- name: Create platform data root
+  ansible.builtin.file:
+    path: "{{ platform_data_root }}"
+    state: directory
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0750"
+
+- name: Create shared data directories
+  ansible.builtin.file:
+    path: "{{ platform_data_root }}/{{ item.path }}"
+    state: directory
+    owner: "{{ item.uid }}"
+    group: "{{ item.gid | default(item.uid) }}"
+    mode: "0755"
+  loop: "{{ platform_data_dirs }}"

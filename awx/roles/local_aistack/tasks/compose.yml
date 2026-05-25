@@ -1,0 +1,46 @@
+---
+- name: Create ai-net Docker network
+  community.docker.docker_network:
+    name: "{{ aistack_network }}"
+    driver: bridge
+    ipam_config:
+      - subnet: "{{ aistack_subnet }}"
+    state: present
+
+- name: Ensure env/ directory exists
+  ansible.builtin.file:
+    path: "{{ aistack_compose_dir }}/env"
+    state: directory
+    owner: "{{ platform_user }}"
+    mode: "0750"
+
+- name: Start AI Platform stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ aistack_compose_dir }}"
+    project_name: "{{ aistack_project_name }}"
+    files: "{{ aistack_compose_files }}"
+    state: present
+    pull: missing
+  become_user: "{{ platform_user }}"
+  register: aistack_result
+
+- name: Wait for PostgreSQL
+  ansible.builtin.command: >
+    docker exec $(docker ps -qf 'name=postgres') pg_isready -U postgres
+  register: pg_ready
+  retries: 15
+  delay: 10
+  until: pg_ready.rc == 0
+  changed_when: false
+  ignore_errors: true
+
+- name: Wait for OpenWebUI
+  ansible.builtin.uri:
+    url: "http://localhost:{{ port_aistack_openwebui }}"
+    status_code: [200, 301, 302]
+    timeout: 10
+  retries: 18
+  delay: 10
+  until: openwebui_ready.status in [200, 301, 302]
+  register: openwebui_ready
+  ignore_errors: true

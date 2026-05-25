@@ -1,0 +1,179 @@
+# =============================================================================
+# Traefik Dynamic Configuration — local-aistack (AI Platform)
+#
+# local-aistack services run in Docker Compose on the shared `home-net`
+# network. Traefik discovers them via Docker labels AND via this file for
+# any service that doesn't use labels (e.g., third-party images with
+# minimal config).
+#
+# Container names → host aliases on home-net:
+#   openwebui      :3000
+#   jupyterlab     :8888
+#   mlflow         :5000
+#   minio          :9000 (API) / :9001 (Console)
+#   litellm        :4000
+#   api-server     :8000
+#   portainer      :9000
+#   langfuse       :3000 (separate host rule)
+#   opensearch-dashboards :5601
+# =============================================================================
+
+http:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Routers
+  # ──────────────────────────────────────────────────────────────────────────
+  routers:
+
+    aistack-openwebui:
+      rule: "Host(`aistack.home`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: openwebui-svc
+      middlewares:
+        - aistack-security-headers
+      priority: 1
+
+    aistack-api:
+      rule: "Host(`aistack.home`) && PathPrefix(`/api`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: aistack-api-svc
+      middlewares:
+        - aistack-security-headers
+        - aistack-strip-api-prefix
+      priority: 20
+
+    aistack-jupyterlab:
+      rule: "Host(`jupyter.aistack.home`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: jupyterlab-svc
+      middlewares:
+        - aistack-security-headers
+
+    aistack-mlflow:
+      rule: "Host(`mlflow.aistack.home`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: mlflow-svc
+      middlewares:
+        - aistack-security-headers
+
+    aistack-minio-console:
+      rule: "Host(`minio.aistack.home`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: minio-console-svc
+      middlewares:
+        - aistack-security-headers
+
+    aistack-litellm:
+      rule: "Host(`litellm.aistack.home`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: litellm-svc
+      middlewares:
+        - aistack-security-headers
+
+    aistack-langfuse:
+      rule: "Host(`langfuse.aistack.home`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: langfuse-svc
+      middlewares:
+        - aistack-security-headers
+
+    aistack-opensearch:
+      rule: "Host(`opensearch.aistack.home`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: opensearch-dashboards-svc
+      middlewares:
+        - aistack-security-headers
+
+    aistack-portainer:
+      rule: "Host(`portainer.aistack.home`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: portainer-svc
+      middlewares:
+        - aistack-security-headers
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Services
+  # ──────────────────────────────────────────────────────────────────────────
+  services:
+
+    openwebui-svc:
+      loadBalancer:
+        servers:
+          - url: "http://openwebui:3000"
+
+    aistack-api-svc:
+      loadBalancer:
+        servers:
+          - url: "http://api-server:8000"
+
+    jupyterlab-svc:
+      loadBalancer:
+        servers:
+          - url: "http://jupyterlab:8888"
+
+    mlflow-svc:
+      loadBalancer:
+        servers:
+          - url: "http://mlflow:5000"
+
+    minio-console-svc:
+      loadBalancer:
+        servers:
+          - url: "http://minio:9001"
+
+    litellm-svc:
+      loadBalancer:
+        servers:
+          - url: "http://litellm:4000"
+
+    langfuse-svc:
+      loadBalancer:
+        servers:
+          - url: "http://langfuse:3000"
+
+    opensearch-dashboards-svc:
+      loadBalancer:
+        servers:
+          - url: "http://opensearch-dashboards:5601"
+
+    portainer-svc:
+      loadBalancer:
+        servers:
+          - url: "http://portainer:9000"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Middlewares
+  # ──────────────────────────────────────────────────────────────────────────
+  middlewares:
+
+    aistack-security-headers:
+      headers:
+        stsSeconds: 31536000
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-App: "local-aistack"
+          X-Powered-By: ""
+
+    aistack-strip-api-prefix:
+      stripPrefix:
+        prefixes:
+          - "/api"

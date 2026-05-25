@@ -1,0 +1,9 @@
+---
+- name: Deploy BlackieFi
+  hosts: home_servers
+  become: false
+  gather_facts: true
+
+  roles:
+    - role: ../../roles/blackiefi
+      tags: [blackiefi]

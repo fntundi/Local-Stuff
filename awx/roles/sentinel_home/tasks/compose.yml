@@ -1,0 +1,13 @@
+---
+- name: Start Sentinel-Home stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ sentinel_compose_dir }}"
+    project_name: "{{ sentinel_project_name }}"
+    files:
+      - docker-compose.yml
+      - "{{ 'docker-compose.prod.yml' if platform_env == 'prod' else 'docker-compose.dev.yml' }}"
+    state: present
+    pull: missing
+  become_user: "{{ platform_user }}"
+  register: sentinel_compose_result
+  tags: [sentinel, deploy]

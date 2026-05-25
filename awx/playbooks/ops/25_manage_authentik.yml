@@ -1,0 +1,35 @@
+---
+- name: Manage Authentik
+  hosts: home_servers
+  become: false
+  gather_facts: true
+
+  tasks:
+    - name: Pull latest Authentik images
+      community.docker.docker_compose_v2_pull:
+        project_src: "{{ authentik_compose_dir }}"
+        project_name: "{{ authentik_project_name }}"
+      tags: [authentik]
+
+    - name: Restart Authentik stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ authentik_compose_dir }}"
+        project_name: "{{ authentik_project_name }}"
+        files:
+          - docker-compose.yml
+        state: present
+        pull: never
+        recreate: always
+      become_user: "{{ platform_user }}"
+      tags: [authentik]
+
+    - name: Check Authentik readiness
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ authentik_server_port }}/-/health/ready/"
+        status_code: 200
+        timeout: 10
+      register: authentik_ready
+      retries: 12
+      delay: 5
+      until: authentik_ready.status == 200
+      tags: [authentik, verify]

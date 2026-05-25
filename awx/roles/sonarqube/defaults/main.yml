@@ -1,0 +1,16 @@
+---
+sonarqube_root: "{{ platform_home }}/sonarqube"
+sonarqube_workdir: "{{ sonarqube_root }}/work"
+sonarqube_project_name: sonarqube
+sonarqube_image: sonarqube:lts-community
+sonarqube_postgres_image: postgres:12
+sonarqube_http_port: 9000
+sonarqube_db_name: sonar
+sonarqube_db_user: sonar
+sonarqube_db_password: "{{ vault_sonarqube_db_password }}"
+sonarqube_db_dir: "{{ platform_data_root }}/sonarqube/postgresql"
+sonarqube_data_dir: "{{ platform_data_root }}/sonarqube/data"
+sonarqube_extensions_dir: "{{ platform_data_root }}/sonarqube/extensions"
+sonarqube_logs_dir: "{{ platform_data_root }}/sonarqube/logs"
+sonarqube_network: sonarqube-net
+sonarqube_vm_max_map_count: 524288

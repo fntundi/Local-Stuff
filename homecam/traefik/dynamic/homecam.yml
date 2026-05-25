@@ -1,0 +1,113 @@
+# =============================================================================
+# Traefik Dynamic Configuration — HomeCam (Sentinel NOC)
+#
+# HomeCam runs in k3d (Kubernetes). Traefik routes to the cluster via the
+# NodePort services mapped out of the k3d container onto the host.
+#
+# k3d default port mappings (set in k8s/k3d-config.yaml):
+#   Host:80   → k3d:80  (ingress-nginx frontend)
+#   Host:8001 → k3d:8001 (backend direct — for ZAP/test access)
+#   Host:8888 → k3d:8888 (MediaMTX HLS)
+#   Host:8554 → k3d:8554 (MediaMTX RTSP)
+#
+# Production: replace localhost:XXXX with the k3d node IP + NodePort values
+# from `kubectl get svc -n sentinel-noc`.
+# =============================================================================
+
+http:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Routers
+  # ──────────────────────────────────────────────────────────────────────────
+  routers:
+
+    homecam-frontend:
+      rule: "Host(`homecam.home`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: homecam-frontend-svc
+      middlewares:
+        - homecam-security-headers
+
+    homecam-api:
+      rule: "Host(`homecam.home`) && PathPrefix(`/api`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: homecam-backend-svc
+      middlewares:
+        - homecam-security-headers
+        - homecam-api-ratelimit
+      priority: 10    # higher than frontend to match /api first
+
+    homecam-hls:
+      rule: "Host(`homecam.home`) && PathPrefix(`/hls`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: homecam-hls-svc
+      middlewares:
+        - homecam-security-headers
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Services (pointing to k3d NodePort / ingress-nginx on host)
+  # ──────────────────────────────────────────────────────────────────────────
+  services:
+
+    homecam-frontend-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:80"   # k3d ingress-nginx
+        passHostHeader: true
+
+    homecam-backend-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8001"
+        passHostHeader: true
+
+    homecam-hls-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8888"
+        passHostHeader: true
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Middlewares
+  # ──────────────────────────────────────────────────────────────────────────
+  middlewares:
+
+    homecam-security-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+        frameDeny: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-App: "HomeCam"
+          X-Powered-By: ""   # strip server info
+
+    homecam-api-ratelimit:
+      rateLimit:
+        average: 100
+        burst: 50
+        period: "1m"
+
+# ──────────────────────────────────────────────────────────────────────────
+# TCP — RTSP passthrough to MediaMTX
+# ──────────────────────────────────────────────────────────────────────────
+tcp:
+  routers:
+    homecam-rtsp:
+      entryPoints:
+        - rtsp
+      rule: "HostSNI(`*`)"
+      service: homecam-rtsp-svc
+
+  services:
+    homecam-rtsp-svc:
+      loadBalancer:
+        servers:
+          - address: "host.docker.internal:8554"

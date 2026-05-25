@@ -1,0 +1,22 @@
+---
+- name: Check if k3d cluster exists
+  ansible.builtin.command: k3d cluster list -o json
+  register: k3d_list
+  changed_when: false
+
+- name: Create k3d cluster (ai-platform)
+  ansible.builtin.command: >
+    k3d cluster create {{ k3d_aistack_cluster }}
+    --port "80:80@loadbalancer"
+    --port "443:443@loadbalancer"
+    --api-port 6551
+    --network {{ shared_network }}
+  when: k3d_aistack_cluster not in (k3d_list.stdout | from_json | map(attribute='name') | list)
+  become_user: "{{ platform_user }}"
+
+- name: Apply k8s manifests (kustomize)
+  kubernetes.core.k8s:
+    src: "{{ aistack_k8s_dir }}"
+    kubeconfig: "{{ ansible_env.HOME }}/.kube/config"
+    state: present
+  become_user: "{{ platform_user }}"

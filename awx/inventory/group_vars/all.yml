@@ -1,0 +1,400 @@
+---
+# =============================================================================
+# Home Platform — Centralized Variables
+# All playbooks and roles read from here. Override in host_vars/ for
+# host-specific values. Secrets use vault_ prefix and are injected by AWX.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Platform identity
+# -----------------------------------------------------------------------------
+platform_user: bchan
+platform_group: bchan
+platform_home: "/home/{{ platform_user }}"
+platform_repo_root: "{{ platform_home }}/Local-Stuff"
+platform_env: prod          # dev | prod
+deploy_strategy: compose    # compose | k8s  (per-app override allowed)
+
+platform_timezone: America/New_York
+platform_locale: en_US.UTF-8
+
+# SSH hardening
+ssh_port: 22
+ssh_allow_password_auth: false
+ssh_allow_root_login: false
+
+# Firewall — additional allowed TCP ports beyond SSH/HTTP/HTTPS
+firewall_extra_tcp_ports:
+  - 8554   # RTSP
+  - 8080   # Jenkins
+  - 9000   # SonarQube / Authentik
+  - 31000  # Sentinel-Home k3d frontend NodePort
+  - 31001  # Sentinel-Home k3d backend NodePort
+  - 31443  # Sentinel-Home k3d HTTPS NodePort
+
+# Kernel tuning
+vm_swappiness: 1
+fs_file_max: 1048576
+
+# -----------------------------------------------------------------------------
+# Git repositories
+# -----------------------------------------------------------------------------
+repo_hub:           /data/GitHub/Home/Local-Stuff
+repo_clone_url:     git@github.com:fntundi/Local-Stuff.git
+repo_local_stuff:   "{{ repo_clone_url }}"
+repo_homecam:       "{{ repo_clone_url }}"   # legacy alias
+repo_local_aistack: git@github.com:fntundi/local-aistack.git
+repo_blackiefi:     git@github.com:fntundi/BlackieFi.git
+repo_sentinel_home: git@github.com:fntundi/Sentinel-Home.git
+repo_branch:        main
+
+# -----------------------------------------------------------------------------
+# Docker networks
+# -----------------------------------------------------------------------------
+traefik_network:   home-net
+traefik_subnet:    172.20.0.0/16
+
+homecam_network:   sentinel-network
+homecam_subnet:    172.21.0.0/16
+
+aistack_network:   ai-net
+aistack_subnet:    172.22.0.0/16
+
+blackiefi_network: blackiefi-net
+blackiefi_subnet:  172.23.0.0/16
+
+# Shared cross-cluster network (HomeCam k3d ↔ AI Platform Traefik)
+shared_network: ai-home-shared
+shared_subnet:  172.30.0.0/24
+
+# -----------------------------------------------------------------------------
+# DNS / domains
+# -----------------------------------------------------------------------------
+domain_public: blackiechan.net
+
+# Public hostnames — all services use blackiechan.net subdomains.
+# DNS (Cloudflare / public resolver) must point each name to the home-server's public IP.
+# /etc/hosts on the home-server maps them to 127.0.0.1 so Traefik self-routes correctly.
+hosts_local:
+  - { name: homecam.blackiechan.net,      ip: 127.0.0.1 }
+  - { name: sentinel.blackiechan.net,     ip: 127.0.0.1 }
+  - { name: chat.blackiechan.net,         ip: 127.0.0.1 }
+  - { name: api.blackiechan.net,          ip: 127.0.0.1 }
+  - { name: lab.blackiechan.net,          ip: 127.0.0.1 }
+  - { name: mlflow.blackiechan.net,       ip: 127.0.0.1 }
+  - { name: minio.blackiechan.net,        ip: 127.0.0.1 }
+  - { name: litellm.blackiechan.net,      ip: 127.0.0.1 }
+  - { name: langfuse.blackiechan.net,     ip: 127.0.0.1 }
+  - { name: opensearch.blackiechan.net,   ip: 127.0.0.1 }
+  - { name: portainer.blackiechan.net,    ip: 127.0.0.1 }
+  - { name: workflows.blackiechan.net,    ip: 127.0.0.1 }
+  - { name: authentik.blackiechan.net,    ip: 127.0.0.1 }
+  - { name: autoans.blackiechan.net,      ip: 127.0.0.1 }
+  - { name: leeeroyy.blackiechan.net,     ip: 192.168.1.111 }
+  - { name: gitlab.blackiechan.net,       ip: 192.168.4.14 }
+  - { name: traefik.blackiechan.net,      ip: 127.0.0.1 }
+
+# -----------------------------------------------------------------------------
+# Port assignments (host-level, for firewall and documentation)
+# -----------------------------------------------------------------------------
+port_http:   80
+port_https:  443
+port_rtsp:   8554
+
+# Ports used when BIND_ADDRESS is set for direct access (bypassing Traefik)
+port_homecam_backend:  8001
+port_homecam_hls:      8888
+port_aistack_api:      8050
+port_aistack_openwebui: 3000
+port_aistack_mlflow:   5000
+port_aistack_jupyter:  8888
+port_aistack_litellm:  4000
+port_aistack_langfuse: 3100
+port_aistack_minio:    9001
+port_aistack_portainer: 9000
+port_aistack_opensearch: 9200
+
+# -----------------------------------------------------------------------------
+# Kubernetes clusters
+# -----------------------------------------------------------------------------
+k3d_homecam_cluster:       sentinel-noc
+k3d_aistack_cluster:       ai-platform
+k3d_blackiefi_cluster:     blackiefi
+k3d_sentinel_home_cluster: sentinel-home
+
+k8s_homecam_namespace:       sentinel-noc
+k8s_aistack_namespace:       ai-platform
+k8s_blackiefi_namespace:     blackiefi
+k8s_sentinel_home_namespace: sentinel-home
+
+# k3d NodePort offsets (so clusters don't clash on the host)
+k3d_homecam_lb_http_port:  30080
+k3d_homecam_lb_https_port: 30443
+k3d_homecam_backend_port:  30081
+k3d_homecam_hls_port:      30888
+
+k3d_sentinel_home_lb_http_port:  31000
+k3d_sentinel_home_lb_https_port: 31443
+k3d_sentinel_home_backend_port:  31001
+k3d_sentinel_home_api_port:      6552   # k3d kubeAPI host port
+
+# -----------------------------------------------------------------------------
+# Data directories
+# Path: {{ platform_home }}/data/<name>
+# UID/GID matches the container process user for each service.
+# -----------------------------------------------------------------------------
+platform_data_root: "{{ platform_home }}/data"
+
+platform_data_dirs:
+  # PostgreSQL (postgres uid=70)
+  - { path: postgres,         uid: "70",    gid: "70"    }
+  # Qdrant (qdrant uid=10001)
+  - { path: qdrant,           uid: "10001", gid: "10001" }
+  - { path: qdrant/snapshots, uid: "10001", gid: "10001" }
+  # Ollama (ollama uid=1000)
+  - { path: ollama,           uid: "1000",  gid: "1000"  }
+  - { path: ollama-dev,       uid: "1000",  gid: "1000"  }
+  # MinIO (minio uid=1000)
+  - { path: minio,            uid: "1000",  gid: "1000"  }
+  # MLflow (mlflow uid=10002)
+  - { path: mlflow,           uid: "10002", gid: "10002" }
+  # Redis (redis uid=999)
+  - { path: redis,            uid: "999",   gid: "999"   }
+  # MongoDB (mongodb uid=999)
+  - { path: mongodb,          uid: "999",   gid: "999"   }
+  # Root-owned app data
+  - { path: activepieces,     uid: "root",  gid: "root"  }
+  - { path: openwebui,        uid: "root",  gid: "root"  }
+  - { path: jupyter,          uid: "root",  gid: "root"  }
+  - { path: rag-runner,       uid: "root",  gid: "root"  }
+  - { path: portainer,        uid: "root",  gid: "root"  }
+  - { path: langfuse,         uid: "root",  gid: "root"  }
+  # Traefik TLS certs
+  - { path: traefik/certs,    uid: "root",  gid: "root"  }
+  # Backups
+  - { path: backups,          uid: "{{ platform_user }}", gid: "{{ platform_group }}" }
+  # Jenkins
+  - { path: jenkins/home,               uid: "1000", gid: "1000" }
+  - { path: jenkins/work,               uid: "1000", gid: "1000" }
+  # SonarQube
+  - { path: sonarqube/data,             uid: "1000", gid: "1000" }
+  - { path: sonarqube/extensions,       uid: "1000", gid: "1000" }
+  - { path: sonarqube/logs,             uid: "1000", gid: "1000" }
+  - { path: sonarqube/postgresql,       uid: "999",  gid: "999"  }
+
+# -----------------------------------------------------------------------------
+# System packages
+# -----------------------------------------------------------------------------
+system_packages:
+  - git
+  - curl
+  - wget
+  - htop
+  - iotop
+  - jq
+  - yq
+  - python3
+  - python3-pip
+  - python3-venv
+  - build-essential
+  - ufw
+  - fail2ban
+  - unzip
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - net-tools
+  - nmap
+  - openssl
+  - rsync
+  - tmux
+  - vim
+
+# -----------------------------------------------------------------------------
+# Docker
+# -----------------------------------------------------------------------------
+docker_log_driver: json-file
+docker_log_max_size: "10m"
+docker_log_max_file: "3"
+docker_data_root: /var/lib/docker   # override in host_vars if non-default disk
+
+# -----------------------------------------------------------------------------
+# Traefik
+# -----------------------------------------------------------------------------
+traefik_version: v3.1
+traefik_project_name: traefik-gw
+traefik_compose_file: "{{ platform_repo_root }}/traefik/docker-compose.yml"
+# htpasswd-encoded user:password — generate with: htpasswd -nb admin yourpassword
+# In AWX, set vault_traefik_dashboard_users as a secret variable
+traefik_dashboard_users: "{{ vault_traefik_dashboard_users }}"
+
+# -----------------------------------------------------------------------------
+# Authentik SSO
+# -----------------------------------------------------------------------------
+authentik_compose_dir: "{{ platform_repo_root }}/authentik"
+authentik_project_name: authentik
+authentik_host: authentik.blackiechan.net
+authentik_version: "2026.2"
+authentik_server_port: 9000
+authentik_secret_key: "{{ vault_authentik_secret_key }}"
+authentik_pg_password: "{{ vault_authentik_pg_password }}"
+authentik_error_reporting_enabled: false
+
+# -----------------------------------------------------------------------------
+# HomeCam (Sentinel NOC)
+# -----------------------------------------------------------------------------
+homecam_deploy_strategy: "{{ deploy_strategy }}"
+homecam_compose_dir: "{{ platform_repo_root }}/homecam"
+homecam_k8s_dir: "{{ platform_repo_root }}/homecam/k8s"
+homecam_k3d_cluster: "{{ k3d_homecam_cluster }}"
+
+# Secrets — provided by vault/AWX
+homecam_mongo_user:      admin
+homecam_mongo_password:  "{{ vault_homecam_mongo_password }}"
+homecam_jwt_secret:      "{{ vault_homecam_jwt_secret }}"
+homecam_encryption_key:  "{{ vault_homecam_encryption_key }}"
+
+# -----------------------------------------------------------------------------
+# local-aistack (Hybrid AI Platform)
+# -----------------------------------------------------------------------------
+aistack_deploy_strategy: "{{ deploy_strategy }}"
+aistack_compose_dir:    "{{ platform_repo_root }}/local-aistack"
+aistack_env_file:       "{{ aistack_compose_dir }}/env/.env.prod"
+aistack_k8s_dir:        "{{ aistack_compose_dir }}/k8s/base"
+aistack_k3d_cluster:    "{{ k3d_aistack_cluster }}"
+aistack_project_name:   ai-platform
+aistack_bind_address:   "127.0.0.1"   # set to LAN IP for direct access
+
+# Secrets — provided by vault/AWX
+aistack_postgres_password:     "{{ vault_aistack_postgres_password }}"
+aistack_qdrant_api_key:        "{{ vault_aistack_qdrant_api_key }}"
+aistack_ap_encryption_key:     "{{ vault_aistack_ap_encryption_key }}"
+aistack_ap_jwt_secret:         "{{ vault_aistack_ap_jwt_secret }}"
+aistack_openwebui_secret_key:  "{{ vault_aistack_openwebui_secret_key }}"
+aistack_jupyter_token:         "{{ vault_aistack_jupyter_token }}"
+aistack_minio_root_password:   "{{ vault_aistack_minio_root_password }}"
+aistack_portainer_password:    "{{ vault_aistack_portainer_password }}"
+aistack_litellm_master_key:    "{{ vault_aistack_litellm_master_key }}"
+aistack_langfuse_secret_key:   "{{ vault_aistack_langfuse_secret_key }}"
+aistack_langfuse_public_key:   "{{ vault_aistack_langfuse_public_key }}"
+aistack_langfuse_nextauth_secret: "{{ vault_aistack_langfuse_nextauth_secret }}"
+aistack_langfuse_salt:         "{{ vault_aistack_langfuse_salt }}"
+aistack_langfuse_enc_key:      "{{ vault_aistack_langfuse_enc_key }}"
+aistack_api_jwt_secret:        "{{ vault_aistack_api_jwt_secret }}"
+cloudflare_tunnel_token:       "{{ vault_cloudflare_tunnel_token }}"
+
+# Ollama model defaults
+aistack_ollama_chat_model:      phi3
+aistack_ollama_code_model:      phi3
+aistack_ollama_embedding_model: nomic-embed-text
+aistack_ollama_keep_alive:      10m
+
+# MinIO bucket names
+aistack_minio_bucket_mlflow:  mlflow
+aistack_minio_bucket_ci:      ci-artifacts
+
+# -----------------------------------------------------------------------------
+# BlackieFi
+# -----------------------------------------------------------------------------
+blackiefi_deploy_strategy: k8s     # k8s only (no docker-compose)
+blackiefi_compose_dir:    "{{ platform_repo_root }}/../BlackieFi"
+blackiefi_k3d_cluster:    "{{ k3d_blackiefi_cluster }}"
+blackiefi_namespace:      "{{ k8s_blackiefi_namespace }}"
+blackiefi_hostname:       "blackiefi.{{ domain_local }}"
+blackiefi_registry_port:  5001
+
+# Secrets
+blackiefi_postgres_password:   "{{ vault_blackiefi_postgres_password }}"
+blackiefi_automation_key:      "{{ vault_blackiefi_automation_key }}"
+blackiefi_bootstrap_password:  "{{ vault_blackiefi_bootstrap_password }}"
+
+# -----------------------------------------------------------------------------
+# Authentik SSO (secrets — provided by vault/AWX)
+# -----------------------------------------------------------------------------
+authentik_secret_key: "{{ vault_authentik_secret_key }}"
+authentik_pg_password: "{{ vault_authentik_pg_password }}"
+
+# -----------------------------------------------------------------------------
+# Sentinel-Home
+# -----------------------------------------------------------------------------
+sentinel_deploy_strategy: k8s
+sentinel_compose_dir: "{{ platform_repo_root }}/Sentinel-Home"
+sentinel_project_name: sentinel-home
+sentinel_k8s_dir: "{{ sentinel_compose_dir }}/k8s"
+sentinel_k3d_cluster: "{{ k3d_sentinel_home_cluster }}"
+sentinel_k3d_config: "{{ platform_repo_root }}/sentinel-home/k8s/k3d-config.yaml"
+sentinel_namespace: "{{ k8s_sentinel_home_namespace }}"
+sentinel_hostname: sentinel.blackiechan.net
+sentinel_base_url: "https://sentinel.blackiechan.net"
+sentinel_authentik_client_id: sentinel-home
+sentinel_authentik_redirect_url: "https://sentinel.blackiechan.net/oauth2/callback"
+
+# Secrets — provided by vault/AWX
+sentinel_jwt_secret:       "{{ vault_sentinel_jwt_secret }}"
+sentinel_mongo_password:   "{{ vault_sentinel_mongo_password }}"
+sentinel_encryption_key:   "{{ vault_sentinel_encryption_key }}"
+
+# -----------------------------------------------------------------------------
+# Backup
+# -----------------------------------------------------------------------------
+backup_dir:       "{{ platform_data_root }}/backups"
+backup_retention: 30   # days
+backup_cron_hour: 2
+backup_cron_minute: 0
+
+# -----------------------------------------------------------------------------
+# AWX self-management (used by awx_config/ playbooks)
+# -----------------------------------------------------------------------------
+awx_host:         "http://localhost"   # AWX API endpoint
+awx_username:     admin
+awx_password:     "{{ vault_awx_admin_password }}"
+awx_organization: "Home Platform"
+awx_project_name: "Home Platform Infra"
+awx_scm_url:      "{{ repo_clone_url }}"
+awx_scm_branch:   "{{ repo_branch }}"
+
+# -----------------------------------------------------------------------------
+# Jenkins
+# -----------------------------------------------------------------------------
+jenkins_root:            "{{ platform_home }}/jenkins"
+jenkins_workdir:         "{{ jenkins_root }}/work"
+jenkins_project_name:    jenkins
+jenkins_image_name:      home-platform/jenkins-controller
+jenkins_image_tag:       latest
+jenkins_http_port:       8080
+jenkins_agent_port:      50000
+jenkins_admin_user:      admin
+jenkins_admin_password:  "{{ vault_jenkins_admin_password }}"
+jenkins_git_user:        "{{ vault_jenkins_git_user }}"
+jenkins_git_token:       "{{ vault_jenkins_git_token }}"
+jenkins_sonarqube_token: "{{ vault_jenkins_sonarqube_token }}"
+jenkins_docker_user:     "{{ vault_jenkins_docker_user }}"
+jenkins_docker_password: "{{ vault_jenkins_docker_password }}"
+jenkins_minio_access_key: "{{ vault_jenkins_minio_access_key }}"
+jenkins_minio_secret_key: "{{ vault_jenkins_minio_secret_key }}"
+jenkins_docker_registry:  localhost:5000
+jenkins_minio_endpoint:   http://minio:9000
+jenkins_minio_bucket:     jenkins-artifacts
+jenkins_sonarqube_url:    http://sonarqube-server:9000
+jenkins_traefik_network:   home-net
+jenkins_runner_name:     docker
+jenkins_runner_label:    docker
+jenkins_runner_host:     "{{ hostvars['jenkins-runner'].ansible_host | default('127.0.0.1') }}"
+jenkins_runner_ssh_port: 22
+jenkins_runner_user:     jenkins
+jenkins_runner_remote_fs: /home/jenkins/agent
+jenkins_runner_private_key: "{{ vault_jenkins_runner_ssh_private_key }}"
+jenkins_network:         jenkins-net
+jenkins_subnet:          172.24.0.0/16
+
+sonarqube_root:          "{{ platform_home }}/sonarqube"
+sonarqube_workdir:       "{{ sonarqube_root }}/work"
+sonarqube_project_name:  sonarqube
+sonarqube_image:         sonarqube:lts-community
+sonarqube_postgres_image: postgres:12
+sonarqube_http_port:     9000
+sonarqube_db_name:       sonar
+sonarqube_db_user:       sonar
+sonarqube_db_password:   "{{ vault_sonarqube_db_password }}"
+sonarqube_network:       sonarqube-net
+sonarqube_subnet:        172.25.0.0/16

@@ -1,0 +1,234 @@
+// ============================================================================
+// Sentinel-Home — Frontend CI Pipeline  (Skeleton)
+//
+// This pipeline is pre-wired for the full test suite. Fill in the
+// tech-stack-specific sections marked with TODO once the stack is defined.
+//
+// Stages:
+//   Checkout → Install → Lint → Build → Unit Tests → Smoke →
+//   Functional → Regression → SonarQube → ZAP → 508 Accessibility → Push
+// ============================================================================
+
+@Library('home-platform') _
+
+pipeline {
+
+    agent none
+
+    options {
+        ansiColor('xterm')
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '50', daysToKeepStr: '30'))
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'staging', 'prod'],
+            description: 'Target environment'
+        )
+        booleanParam(name: 'SKIP_SONAR',  defaultValue: false, description: 'Skip SonarQube')
+        booleanParam(name: 'SKIP_ZAP',    defaultValue: false, description: 'Skip ZAP DAST')
+        booleanParam(name: 'SKIP_508',    defaultValue: false, description: 'Skip 508 accessibility')
+        booleanParam(name: 'SKIP_DEPLOY', defaultValue: true,  description: 'Skip image push')
+        string(name: 'DOCKER_TAG', defaultValue: '', description: 'Override image tag')
+    )
+
+    environment {
+        APP           = 'sentinel-home'
+        COMPONENT     = 'frontend'
+        // TODO: set NODE_IMAGE or equivalent build image
+        BUILD_IMAGE   = 'node:20-alpine'
+        FRONTEND_DIR  = 'frontend'
+        IMAGE_NAME    = "${env.DOCKER_REGISTRY ?: 'localhost:5000'}/sentinel-home-frontend"
+        SONAR_KEY     = 'home-platform.sentinel-home.frontend'
+        SONAR_TOKEN   = credentials('sonarqube-token')
+        DOCKER_CREDS  = credentials('docker-registry-creds')
+    }
+
+    stages {
+
+        stage('Checkout') {
+            agent { label 'docker' }
+            steps {
+                checkout scm
+                script {
+                    env.GIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    env.IMAGE_TAG = params.DOCKER_TAG ?: env.GIT_SHORT
+
+                    def globalEnv = readFile('jenkins/pipelines/global.env')
+                    def appEnv    = readFile('jenkins/pipelines/sentinel-home/sentinel-home.env')
+                    [globalEnv, appEnv].each { block ->
+                        block.readLines().each { line ->
+                            if (line && !line.startsWith('#') && line.contains('=')) {
+                                def (k, v) = line.split('=', 2)
+                                env[k.trim()] = v.trim()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Install Dependencies') {
+            agent {
+                docker { image env.BUILD_IMAGE; reuseNode true }
+            }
+            steps {
+                dir(env.FRONTEND_DIR) {
+                    // TODO: replace with correct package manager command
+                    sh 'yarn install --frozen-lockfile 2>/dev/null || npm ci || echo "No package.json yet — skipping"'
+                }
+            }
+        }
+
+        stage('Lint') {
+            agent {
+                docker { image env.BUILD_IMAGE; reuseNode true }
+            }
+            steps {
+                dir(env.FRONTEND_DIR) {
+                    // TODO: add lint command when framework is chosen
+                    sh 'yarn lint 2>/dev/null || echo "No lint script yet — skipping"'
+                }
+            }
+        }
+
+        stage('Build') {
+            agent {
+                docker { image env.BUILD_IMAGE; reuseNode true }
+            }
+            steps {
+                dir(env.FRONTEND_DIR) {
+                    // TODO: add build command
+                    sh 'yarn build 2>/dev/null || echo "No build script yet — skipping"'
+                }
+                // TODO: uncomment when Dockerfile exists
+                // sh "docker build --tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.FRONTEND_DIR}"
+                echo "TODO: build Docker image — add Dockerfile to ${env.FRONTEND_DIR}/"
+            }
+        }
+
+        stage('Unit Tests') {
+            agent {
+                docker { image env.BUILD_IMAGE; reuseNode true }
+            }
+            steps {
+                dir(env.FRONTEND_DIR) {
+                    // TODO: configure test runner
+                    sh 'yarn test --watchAll=false --passWithNoTests 2>/dev/null || echo "No tests yet"'
+                }
+            }
+        }
+
+        stage('Integration Tests') {
+            agent { label 'docker' }
+            stages {
+
+                stage('Start Test Stack') {
+                    steps {
+                        // TODO: define docker-compose.yml
+                        echo "TODO: define docker-compose.yml for Sentinel-Home"
+                        // sh "docker compose --project-name sentinel-test-${env.BUILD_NUMBER} up -d --wait"
+                    }
+                }
+
+                stage('Smoke Tests') {
+                    steps {
+                        // TODO: add smoke test URLs once stack is defined
+                        echo "TODO: add smoke tests once frontend URL is known"
+                    }
+                }
+
+                stage('Functional Tests') {
+                    steps {
+                        // TODO: add Playwright functional test directory
+                        echo "TODO: add Playwright functional tests (tag: @functional)"
+                    }
+                }
+
+                stage('Regression Tests') {
+                    steps {
+                        // TODO: add Playwright regression test directory
+                        echo "TODO: add Playwright regression tests (tag: @regression)"
+                    }
+                }
+
+                stage('Tear Down') {
+                    steps {
+                        sh """
+                            docker compose --project-name sentinel-test-${env.BUILD_NUMBER} \\
+                                down --volumes --remove-orphans || true
+                        """
+                    }
+                }
+
+            }
+        }
+
+        stage('SonarQube') {
+            when { not { expression { params.SKIP_SONAR } } }
+            agent { label 'docker' }
+            steps {
+                // TODO: set language when framework is known
+                sonarScan(
+                    projectKey: env.SONAR_KEY,
+                    projectName: 'Sentinel-Home Frontend',
+                    sources: env.FRONTEND_DIR,
+                    language: 'js',
+                    exclusions: '**/node_modules/**,**/build/**',
+                )
+            }
+        }
+
+        stage('ZAP Scan') {
+            when { not { expression { params.SKIP_ZAP } } }
+            agent { label 'docker' }
+            steps {
+                // TODO: update target URL when service is running
+                echo "TODO: start frontend service before ZAP scan"
+                zapScan(
+                    target: env.FRONTEND_URL_DEV ?: 'http://sentinel-home-frontend:3000',
+                    mode: env.ZAP_SCAN_MODE ?: 'baseline',
+                    reportName: 'sentinel-home-frontend',
+                    network: 'host',
+                )
+            }
+        }
+
+        stage('508 Accessibility') {
+            when { not { expression { params.SKIP_508 } } }
+            agent { label 'docker' }
+            steps {
+                // TODO: ensure frontend is running before this stage
+                playwright508(
+                    dir: env.FRONTEND_DIR,
+                    baseUrl: env.FRONTEND_URL_DEV ?: 'http://sentinel-home-frontend:3000',
+                    wcagLevel: env.WCAG_LEVEL ?: 'wcag21aa',
+                    failOnViolation: false,
+                )
+            }
+        }
+
+        stage('Push Image') {
+            when { not { expression { params.SKIP_DEPLOY } } }
+            agent { label 'docker' }
+            steps {
+                // TODO: enable once Dockerfile is in place
+                echo "TODO: push image once build step is configured"
+            }
+        }
+
+    } // end stages
+
+    post {
+        always {
+            node('docker') { cleanWs() }
+        }
+        success { echo "Sentinel-Home frontend CI passed" }
+        failure { echo "Sentinel-Home frontend CI FAILED" }
+    }
+
+}

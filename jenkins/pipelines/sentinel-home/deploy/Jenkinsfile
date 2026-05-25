@@ -1,0 +1,230 @@
+// ============================================================================
+// Sentinel-Home — Deploy Pipeline
+// Kubernetes via k3d (sentinel-home namespace)
+// Reports: deploy log + post-smoke results → MinIO deploy/{type}/
+// ============================================================================
+
+@Library('home-platform') _
+
+def loadEnvFiles() {
+    ['jenkins/pipelines/global.env', 'jenkins/pipelines/sentinel-home/sentinel-home.env'].each { f ->
+        if (fileExists(f)) {
+            readFile(f).readLines().each { line ->
+                if (line && !line.startsWith('#') && line.contains('=')) {
+                    def parts = line.split('=', 2)
+                    if (parts.length == 2) env[parts[0].trim()] = parts[1].trim()
+                }
+            }
+        }
+    }
+}
+
+pipeline {
+
+    agent { label 'docker' }
+
+    options {
+        ansiColor('xterm')
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        choice(name: 'ENVIRONMENT',         choices: ['dev','staging','prod'], description: 'Target environment')
+        string(name: 'DOCKER_TAG',          defaultValue: 'latest',  description: 'Image tag to deploy')
+        booleanParam(name: 'FORCE_DEPLOY',          defaultValue: false, description: 'Skip approval gate')
+        booleanParam(name: 'RUN_POST_DEPLOY_SMOKE', defaultValue: true,  description: 'Run smoke tests after deploy')
+        booleanParam(name: 'BOOTSTRAP_CLUSTER',     defaultValue: false, description: 'Create k3d cluster if it does not exist')
+    }
+
+    environment {
+        APP          = 'sentinel-home'
+        COMPONENT    = 'deploy'
+        NAMESPACE    = 'sentinel-home'
+        K8S_DIR      = 'Sentinel-Home/k8s'
+        K3D_CONFIG   = 'sentinel-home/k8s/k3d-config.yaml'
+        IMAGE_TAG    = "${params.DOCKER_TAG}"
+        KUBE_CONFIG  = credentials('kubeconfig-sentinel')
+        DOCKER_CREDS = credentials('docker-registry-creds')
+        MINIO_CREDS  = credentials('minio-credentials')
+        ARTIFACT_DIR = 'build-artifacts'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'git submodule update --init Sentinel-Home'
+                script {
+                    loadEnvFiles()
+                    env.BUILD_DATE              = sh(returnStdout: true, script: 'date +%Y-%m-%d').trim()
+                    env.MINIO_REMOTE_PATH       = "sentinel-home/deploy/${env.BUILD_DATE}/${env.BUILD_NUMBER}"
+                    env.MINIO_ENDPOINT_RESOLVED = env.MINIO_ENDPOINT ?: 'http://minio:9000'
+                    env.MINIO_BUCKET_RESOLVED   = env.MINIO_BUCKET   ?: 'ci-artifacts'
+                    sh "mkdir -p ${env.ARTIFACT_DIR}/deploy"
+                }
+            }
+        }
+
+        stage('Bootstrap k3d Cluster') {
+            when { expression { params.BOOTSTRAP_CLUSTER } }
+            steps {
+                sh """
+                    if ! k3d cluster list | grep -q sentinel-home; then
+                        echo "Creating sentinel-home k3d cluster..."
+                        k3d cluster create --config ${env.K3D_CONFIG}
+                    else
+                        echo "Cluster sentinel-home already exists — skipping creation"
+                    fi
+                    k3d kubeconfig get sentinel-home > /tmp/kubeconfig-sentinel
+                """
+            }
+        }
+
+        stage('Approval Gate') {
+            when {
+                allOf {
+                    expression { params.ENVIRONMENT == 'prod' }
+                    not { expression { params.FORCE_DEPLOY } }
+                }
+            }
+            steps {
+                input(
+                    message: "Deploy Sentinel-Home '${env.IMAGE_TAG}' to PRODUCTION?",
+                    ok: 'Deploy',
+                    submitter: 'admin,deploy-approvers',
+                )
+            }
+        }
+
+        stage('Pre-flight') {
+            steps {
+                withEnv(["KUBECONFIG=${env.KUBE_CONFIG}"]) {
+                    sh """
+                        kubectl config current-context                    | tee  ${env.ARTIFACT_DIR}/deploy/pre-flight.txt
+                        kubectl get nodes -o wide                         >> ${env.ARTIFACT_DIR}/deploy/pre-flight.txt
+                        kubectl get pods -n ${env.NAMESPACE} -o wide      >> ${env.ARTIFACT_DIR}/deploy/pre-flight.txt 2>&1 || true
+                        docker manifest inspect ${env.DOCKER_REGISTRY:-localhost:5000}/sentinel-home-backend:${env.IMAGE_TAG}  \
+                            && echo "backend image:  OK" || echo "backend image:  NOT FOUND"
+                        docker manifest inspect ${env.DOCKER_REGISTRY:-localhost:5000}/sentinel-home-frontend:${env.IMAGE_TAG} \
+                            && echo "frontend image: OK" || echo "frontend image: NOT FOUND"
+                    """
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                withEnv(["KUBECONFIG=${env.KUBE_CONFIG}"]) {
+                    sh """
+                        # Ensure namespace exists
+                        kubectl apply -f ${env.K8S_DIR}/namespace.yaml
+
+                        # Apply config and secrets before workloads
+                        kubectl apply -f ${env.K8S_DIR}/configmap.yaml -n ${env.NAMESPACE}
+                        kubectl apply -f ${env.K8S_DIR}/secrets.yaml   -n ${env.NAMESPACE} || true
+
+                        # Apply network policies
+                        kubectl apply -f ${env.K8S_DIR}/network-policy.yaml -n ${env.NAMESPACE}
+
+                        # Roll out images
+                        kubectl set image deployment/sentinel-home-backend  \
+                            backend=${env.DOCKER_REGISTRY:-localhost:5000}/sentinel-home-backend:${env.IMAGE_TAG}  \
+                            -n ${env.NAMESPACE} 2>/dev/null || true
+                        kubectl set image deployment/sentinel-home-frontend \
+                            frontend=${env.DOCKER_REGISTRY:-localhost:5000}/sentinel-home-frontend:${env.IMAGE_TAG} \
+                            -n ${env.NAMESPACE} 2>/dev/null || true
+
+                        # Apply full manifest directory (idempotent)
+                        kubectl apply -f ${env.K8S_DIR}/ -n ${env.NAMESPACE}
+
+                        # Wait for rollouts
+                        kubectl rollout status deployment/sentinel-home-backend  \
+                            -n ${env.NAMESPACE} --timeout=5m  2>&1 | tee  ${env.ARTIFACT_DIR}/deploy/rollout.txt
+                        kubectl rollout status deployment/sentinel-home-frontend \
+                            -n ${env.NAMESPACE} --timeout=5m        >> ${env.ARTIFACT_DIR}/deploy/rollout.txt
+
+                        echo "DEPLOY_STATUS=SUCCESS"                         | tee  ${env.ARTIFACT_DIR}/deploy/results.txt
+                        echo "ENVIRONMENT=${params.ENVIRONMENT}"             >> ${env.ARTIFACT_DIR}/deploy/results.txt
+                        echo "IMAGE_TAG=${env.IMAGE_TAG}"                    >> ${env.ARTIFACT_DIR}/deploy/results.txt
+                        echo "TIMESTAMP=\$(date -u +%Y-%m-%dT%H:%M:%SZ)"   >> ${env.ARTIFACT_DIR}/deploy/results.txt
+                    """
+                }
+            }
+        }
+
+        stage('Post-Deploy Smoke') {
+            when { expression { params.RUN_POST_DEPLOY_SMOKE } }
+            steps {
+                script {
+                    def url = params.ENVIRONMENT == 'prod'
+                        ? env.FRONTEND_URL_PROD ?: 'https://sentinel.home'
+                        : "http://localhost:${env.K3D_FRONTEND_PORT ?: '31000'}"
+                    sh """
+                        sleep 10
+                        SMOKE_STATUS=FAIL
+                        curl -sf --max-time 15 ${url}/ -o /dev/null && SMOKE_STATUS=PASS
+                        echo "SMOKE_STATUS=\${SMOKE_STATUS}"   | tee  ${env.ARTIFACT_DIR}/deploy/smoke.txt
+                        echo "FRONTEND_URL=${url}"             >> ${env.ARTIFACT_DIR}/deploy/smoke.txt
+                        [ "\${SMOKE_STATUS}" = "PASS" ]
+                    """
+                }
+            }
+        }
+
+        stage('Tag Git') {
+            when { expression { params.ENVIRONMENT == 'prod' } }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'git-credentials',
+                        usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
+                    sh """
+                        git tag -a "deploy-prod-${env.IMAGE_TAG}" \
+                            -m "Production deploy: ${env.IMAGE_TAG}"
+                        git push https://\${GIT_USER}:\${GIT_TOKEN}@\$(git remote get-url origin | sed 's|https://||') \
+                            "deploy-prod-${env.IMAGE_TAG}" || true
+                    """
+                }
+            }
+        }
+
+    } // end stages
+
+    post {
+        always {
+            buildSummary(
+                app: 'sentinel-home', component: 'deploy',
+                buildNumber: env.BUILD_NUMBER,
+                buildResult: currentBuild.currentResult,
+                buildUrl:    env.BUILD_URL,
+                artifactDir: env.ARTIFACT_DIR,
+                minioEndpoint: env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                minioBucket:   env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                minioPath:     env.MINIO_REMOTE_PATH ?: "sentinel-home/deploy/unknown/${env.BUILD_NUMBER}",
+            )
+            publishToMinio(
+                app: 'sentinel-home', component: 'deploy',
+                buildDate:   env.BUILD_DATE ?: sh(returnStdout: true, script: 'date +%Y-%m-%d').trim(),
+                buildNumber: env.BUILD_NUMBER,
+                endpoint:    env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                bucket:      env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                localDir:    env.ARTIFACT_DIR,
+                credentialsId: 'minio-credentials',
+            )
+            cleanWs()
+        }
+        success { echo "Sentinel-Home deployed to ${params.ENVIRONMENT} — tag: ${env.IMAGE_TAG}" }
+        failure {
+            withEnv(["KUBECONFIG=${env.KUBE_CONFIG}"]) {
+                sh """
+                    echo '=== AUTO ROLLBACK ==='
+                    kubectl rollout undo deployment/sentinel-home-backend  -n ${env.NAMESPACE} || true
+                    kubectl rollout undo deployment/sentinel-home-frontend -n ${env.NAMESPACE} || true
+                """
+            }
+        }
+    }
+
+}

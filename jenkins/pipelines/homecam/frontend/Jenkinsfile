@@ -1,0 +1,448 @@
+// ============================================================================
+// HomeCam — Frontend CI Pipeline
+// React 19 (craco) · shadcn/ui · Tailwind CSS
+//
+// Stages:
+//   Checkout → Install → Lint → Build → Unit Tests → Smoke →
+//   Functional → Regression → SonarQube → ZAP → 508 → Push
+//
+// Artifacts uploaded to MinIO:
+//   {MINIO_BUCKET}/homecam/frontend/{BUILD_DATE}/{BUILD_NUMBER}/{type}/
+// ============================================================================
+
+@Library('home-platform') _
+
+// ── Load env files ─────────────────────────────────────────────────────────
+def loadEnvFiles() {
+    ['jenkins/pipelines/global.env', 'jenkins/pipelines/homecam/homecam.env'].each { f ->
+        if (fileExists(f)) {
+            readFile(f).readLines().each { line ->
+                if (line && !line.startsWith('#') && line.contains('=')) {
+                    def parts = line.split('=', 2)
+                    if (parts.length == 2) env[parts[0].trim()] = parts[1].trim()
+                }
+            }
+        }
+    }
+}
+
+pipeline {
+
+    agent none
+
+    options {
+        ansiColor('xterm')
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '50', daysToKeepStr: '30'))
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['dev','staging','prod'],
+               description: 'Target environment for URL resolution')
+        booleanParam(name: 'SKIP_SONAR',  defaultValue: false, description: 'Skip SonarQube scan')
+        booleanParam(name: 'SKIP_ZAP',    defaultValue: false, description: 'Skip OWASP ZAP scan')
+        booleanParam(name: 'SKIP_508',    defaultValue: false, description: 'Skip 508 accessibility tests')
+        booleanParam(name: 'SKIP_DEPLOY', defaultValue: true,  description: 'Skip image push')
+        string(name: 'DOCKER_TAG',        defaultValue: '',    description: 'Override image tag (default: commit SHA)')
+        string(name: 'ZAP_TARGET_OVERRIDE', defaultValue: '', description: 'Override ZAP target URL')
+    }
+
+    environment {
+        APP          = 'homecam'
+        COMPONENT    = 'frontend'
+        NODE_IMAGE   = 'node:20-alpine'
+        FRONTEND_DIR = 'homecam/frontend'
+        IMAGE_NAME   = "${env.DOCKER_REGISTRY ?: 'localhost:5000'}/homecam-frontend"
+        SONAR_TOKEN  = credentials('sonarqube-token')
+        DOCKER_CREDS = credentials('docker-registry-creds')
+        MINIO_CREDS  = credentials('minio-credentials')
+        ARTIFACT_DIR = 'build-artifacts'
+    }
+
+    stages {
+
+        // ────────────────────────────────────────────────────────────────────
+        stage('Checkout') {
+        // ────────────────────────────────────────────────────────────────────
+            agent { label 'docker' }
+            steps {
+                checkout scm
+                sh 'git submodule update --init --recursive'
+                script {
+                    loadEnvFiles()
+                    env.GIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    env.IMAGE_TAG = params.DOCKER_TAG ?: env.GIT_SHORT
+                    env.BUILD_DATE = sh(returnStdout: true, script: 'date +%Y-%m-%d').trim()
+                    env.MINIO_REMOTE_PATH = "homecam/frontend/${env.BUILD_DATE}/${env.BUILD_NUMBER}"
+                    env.MINIO_ENDPOINT_RESOLVED = env.MINIO_ENDPOINT ?: 'http://minio:9000'
+                    env.MINIO_BUCKET_RESOLVED   = env.MINIO_BUCKET   ?: 'ci-artifacts'
+
+                    env.FRONTEND_TARGET_URL = params.ZAP_TARGET_OVERRIDE ?:
+                        (params.ENVIRONMENT == 'prod'    ? env.FRONTEND_URL_PROD    :
+                         params.ENVIRONMENT == 'staging' ? env.FRONTEND_URL_STAGING :
+                         env.FRONTEND_URL_DEV)
+
+                    sh "mkdir -p ${env.ARTIFACT_DIR}/{unit,smoke,functional,regression,zap,sonar,508}"
+                    echo "MinIO path: ${env.MINIO_BUCKET_RESOLVED}/${env.MINIO_REMOTE_PATH}"
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────────────
+        stage('Install') {
+        // ────────────────────────────────────────────────────────────────────
+            agent { docker { image env.NODE_IMAGE; reuseNode true } }
+            steps {
+                dir(env.FRONTEND_DIR) { sh 'yarn install --frozen-lockfile' }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────────────
+        stage('Lint') {
+        // ────────────────────────────────────────────────────────────────────
+            agent { docker { image env.NODE_IMAGE; reuseNode true } }
+            steps {
+                dir(env.FRONTEND_DIR) {
+                    sh "yarn lint --max-warnings=0 2>&1 | tee ../${env.ARTIFACT_DIR}/lint-report.txt"
+                }
+            }
+            post {
+                always { archiveArtifacts artifacts: "${env.ARTIFACT_DIR}/lint-report.txt", allowEmptyArchive: true }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────────────
+        stage('Build') {
+        // ────────────────────────────────────────────────────────────────────
+            agent { docker { image env.NODE_IMAGE; reuseNode true } }
+            steps {
+                dir(env.FRONTEND_DIR) { sh 'yarn build' }
+                sh """
+                    docker build \\
+                        --build-arg BUILDKIT_INLINE_CACHE=1 \\
+                        --cache-from ${env.IMAGE_NAME}:latest \\
+                        --tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} \\
+                        --tag ${env.IMAGE_NAME}:latest \\
+                        ${env.FRONTEND_DIR}
+                """
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────────────
+        stage('Unit Tests') {
+        // ────────────────────────────────────────────────────────────────────
+            agent { docker { image env.NODE_IMAGE; reuseNode true } }
+            steps {
+                dir(env.FRONTEND_DIR) {
+                    sh """
+                        CI=true yarn test \\
+                            --watchAll=false \\
+                            --coverage \\
+                            --coverageReporters=lcov,text \\
+                            --passWithNoTests \\
+                            2>&1 | tee unit-output.txt
+                    """
+                }
+                // Copy results to artifact dir
+                sh """
+                    cp -r ${env.FRONTEND_DIR}/coverage ${env.ARTIFACT_DIR}/unit/ 2>/dev/null || true
+                    cp ${env.FRONTEND_DIR}/unit-output.txt ${env.ARTIFACT_DIR}/unit/ 2>/dev/null || true
+                    # Write JUnit XML stub so buildSummary always has a file to parse
+                    if [ ! -f "${env.ARTIFACT_DIR}/unit/results.xml" ]; then
+                        cp ${env.FRONTEND_DIR}/coverage/*.xml ${env.ARTIFACT_DIR}/unit/results.xml 2>/dev/null || true
+                    fi
+                """
+            }
+            post {
+                always {
+                    publishHTML(target: [
+                        allowMissing: true,
+                        reportDir:    "${env.FRONTEND_DIR}/coverage/lcov-report",
+                        reportFiles:  'index.html',
+                        reportName:   'Frontend Coverage',
+                    ])
+                    archiveArtifacts artifacts: "${env.ARTIFACT_DIR}/unit/**", allowEmptyArchive: true
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────────────
+        stage('Integration Tests') {
+        // ────────────────────────────────────────────────────────────────────
+            agent { label 'docker' }
+            stages {
+
+                stage('Start Test Stack') {
+                    steps {
+                        sh """
+                            mkdir -p ${env.ARTIFACT_DIR}/{smoke,functional,regression}
+                            docker compose \\
+                                --project-name homecam-fe-test-${env.BUILD_NUMBER} \\
+                                --file docker-compose.yml \\
+                                up -d --build --wait
+                        """
+                        sh 'sleep 5'
+                    }
+                }
+
+                stage('Smoke Tests') {
+                    steps {
+                        sh """
+                            SMOKE_STATUS=FAIL
+                            curl -sf http://localhost:3000/ -o /dev/null && SMOKE_STATUS=PASS
+                            echo "SMOKE_STATUS=\${SMOKE_STATUS}" | tee ${env.ARTIFACT_DIR}/smoke/results.txt
+                            echo "Frontend smoke: \${SMOKE_STATUS}"
+                            [ "\${SMOKE_STATUS}" = "PASS" ]
+                        """
+                    }
+                    post {
+                        always { archiveArtifacts artifacts: "${env.ARTIFACT_DIR}/smoke/*", allowEmptyArchive: true }
+                    }
+                }
+
+                stage('Functional Tests') {
+                    agent {
+                        docker {
+                            image env.PLAYWRIGHT_IMAGE ?: 'mcr.microsoft.com/playwright:v1.44.0-jammy'
+                            args  '--network host'
+                            reuseNode true
+                        }
+                    }
+                    steps {
+                        dir('tests/e2e') {
+                            sh """
+                                npm ci --prefer-offline 2>/dev/null || true
+                                BASE_URL=http://localhost:3000 \\
+                                    npx playwright test \\
+                                        --project=chromium \\
+                                        --grep @functional \\
+                                        --reporter=html,junit \\
+                                        2>&1 | tee functional-output.txt || true
+                                cp *.xml ../../${env.ARTIFACT_DIR}/functional/results.xml 2>/dev/null || true
+                                cp functional-output.txt ../../${env.ARTIFACT_DIR}/functional/ 2>/dev/null || true
+                            """
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: 'tests/e2e/test-results/**/*.xml'
+                            publishHTML(target: [
+                                allowMissing: true,
+                                reportDir: 'tests/e2e/playwright-report',
+                                reportFiles: 'index.html',
+                                reportName: 'Functional Tests',
+                            ])
+                        }
+                    }
+                }
+
+                stage('Regression Tests') {
+                    agent {
+                        docker {
+                            image env.PLAYWRIGHT_IMAGE ?: 'mcr.microsoft.com/playwright:v1.44.0-jammy'
+                            args  '--network host'
+                            reuseNode true
+                        }
+                    }
+                    steps {
+                        dir('tests/e2e') {
+                            sh """
+                                BASE_URL=http://localhost:3000 \\
+                                    npx playwright test \\
+                                        --project=chromium \\
+                                        --grep @regression \\
+                                        --reporter=html,junit \\
+                                        2>&1 | tee regression-output.txt || true
+                                cp *.xml ../../${env.ARTIFACT_DIR}/regression/results.xml 2>/dev/null || true
+                                cp regression-output.txt ../../${env.ARTIFACT_DIR}/regression/ 2>/dev/null || true
+                            """
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: 'tests/e2e/test-results/**/*.xml'
+                            publishHTML(target: [
+                                allowMissing: true,
+                                reportDir: 'tests/e2e/playwright-report',
+                                reportFiles: 'index.html',
+                                reportName: 'Regression Tests',
+                            ])
+                        }
+                    }
+                }
+
+                stage('Tear Down Test Stack') {
+                    steps {
+                        sh "docker compose --project-name homecam-fe-test-${env.BUILD_NUMBER} down --volumes --remove-orphans || true"
+                    }
+                }
+
+            } // end nested stages
+
+            post {
+                always {
+                    // Stash all integration test artifacts so the pipeline post can collect them
+                    stash name: "homecam-fe-int-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/**",
+                          allowEmpty: true
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────────────
+        stage('SonarQube') {
+        // ────────────────────────────────────────────────────────────────────
+            when { not { expression { params.SKIP_SONAR } } }
+            agent { label 'docker' }
+            steps {
+                sh "mkdir -p ${env.ARTIFACT_DIR}/sonar"
+                sonarScan(
+                    projectKey:     env.SONAR_PROJECT_KEY_FRONTEND ?: 'home-platform.homecam.frontend',
+                    projectName:    'HomeCam Frontend',
+                    sources:        env.FRONTEND_DIR,
+                    language:       'js',
+                    coverageReport: "${env.FRONTEND_DIR}/coverage/lcov.info",
+                    exclusions:     '**/node_modules/**,**/build/**,**/*.test.js',
+                    artifactDir:    env.ARTIFACT_DIR,
+                )
+            }
+            post {
+                always {
+                    stash name: "homecam-fe-sonar-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/sonar/**",
+                          allowEmpty: true
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────────────
+        stage('ZAP Scan') {
+        // ────────────────────────────────────────────────────────────────────
+            when { not { expression { params.SKIP_ZAP } } }
+            agent { label 'docker' }
+            steps {
+                sh """
+                    mkdir -p ${env.ARTIFACT_DIR}/zap
+                    docker compose --project-name homecam-fe-zap-${env.BUILD_NUMBER} \\
+                        --file docker-compose.yml up -d --wait
+                """
+                script {
+                    try {
+                        zapScan(
+                            target:      'http://localhost:3000',
+                            mode:        env.ZAP_SCAN_MODE ?: 'baseline',
+                            reportName:  'homecam-frontend',
+                            network:     'host',
+                            artifactDir: env.ARTIFACT_DIR,
+                        )
+                    } finally {
+                        sh "docker compose --project-name homecam-fe-zap-${env.BUILD_NUMBER} down --volumes || true"
+                    }
+                }
+            }
+            post {
+                always {
+                    stash name: "homecam-fe-zap-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/zap/**",
+                          allowEmpty: true
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────────────
+        stage('508 Accessibility') {
+        // ────────────────────────────────────────────────────────────────────
+            when { not { expression { params.SKIP_508 } } }
+            agent { label 'docker' }
+            steps {
+                sh """
+                    mkdir -p ${env.ARTIFACT_DIR}/508
+                    docker compose --project-name homecam-fe-508-${env.BUILD_NUMBER} \\
+                        --file docker-compose.yml up -d --wait
+                """
+                playwright508(
+                    dir:            env.FRONTEND_DIR,
+                    baseUrl:        'http://localhost:3000',
+                    wcagLevel:      env.WCAG_LEVEL ?: 'wcag21aa',
+                    artifactDir:    env.ARTIFACT_DIR,
+                    failOnViolation: false,
+                )
+            }
+            post {
+                always {
+                    sh "docker compose --project-name homecam-fe-508-${env.BUILD_NUMBER} down --volumes || true"
+                    stash name: "homecam-fe-508-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/508/**",
+                          allowEmpty: true
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────────────
+        stage('Push Image') {
+        // ────────────────────────────────────────────────────────────────────
+            when { not { expression { params.SKIP_DEPLOY } } }
+            agent { label 'docker' }
+            steps {
+                sh """
+                    echo \${DOCKER_CREDS_PSW} | docker login ${env.DOCKER_REGISTRY} \\
+                        -u \${DOCKER_CREDS_USR} --password-stdin
+                    docker push ${env.IMAGE_NAME}:${env.IMAGE_TAG}
+                    docker push ${env.IMAGE_NAME}:latest
+                """
+            }
+        }
+
+    } // end stages
+
+    // ──────────────────────────────────────────────────────────────────────
+    post {
+    // ──────────────────────────────────────────────────────────────────────
+        always {
+            node('docker') {
+                checkout scm
+                sh "mkdir -p ${env.ARTIFACT_DIR}/{unit,smoke,functional,regression,zap,sonar,508}"
+
+                // Collect stashes from distributed stages
+                script {
+                    ["homecam-fe-int-${env.BUILD_NUMBER}",
+                     "homecam-fe-sonar-${env.BUILD_NUMBER}",
+                     "homecam-fe-zap-${env.BUILD_NUMBER}",
+                     "homecam-fe-508-${env.BUILD_NUMBER}"].each { stashName ->
+                        try { unstash stashName } catch (e) { echo "Stash ${stashName} not available" }
+                    }
+                }
+
+                buildSummary(
+                    app:           'homecam',
+                    component:     'frontend',
+                    buildNumber:   env.BUILD_NUMBER,
+                    buildResult:   currentBuild.currentResult,
+                    buildUrl:      env.BUILD_URL,
+                    artifactDir:   env.ARTIFACT_DIR,
+                    minioEndpoint: env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                    minioBucket:   env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                    minioPath:     env.MINIO_REMOTE_PATH        ?: "homecam/frontend/unknown/${env.BUILD_NUMBER}",
+                )
+
+                publishToMinio(
+                    app:           'homecam',
+                    component:     'frontend',
+                    buildDate:     env.BUILD_DATE ?: sh(returnStdout: true, script: 'date +%Y-%m-%d').trim(),
+                    buildNumber:   env.BUILD_NUMBER,
+                    endpoint:      env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                    bucket:        env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                    localDir:      env.ARTIFACT_DIR,
+                    credentialsId: 'minio-credentials',
+                )
+
+                cleanWs()
+            }
+        }
+        success { echo "HomeCam frontend CI passed — ${env.IMAGE_NAME}:${env.IMAGE_TAG}" }
+        failure { echo "HomeCam frontend CI FAILED" }
+    }
+
+}

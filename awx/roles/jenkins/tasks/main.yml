@@ -1,0 +1,132 @@
+---
+- name: Create Jenkins workdir
+  ansible.builtin.file:
+    path: "{{ jenkins_workdir }}"
+    state: directory
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0755"
+
+- name: Create Jenkins home directory
+  ansible.builtin.file:
+    path: "{{ jenkins_home_dir }}"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: "0755"
+
+- name: Create Jenkins home config directories
+  ansible.builtin.file:
+    path: "{{ jenkins_home_dir }}/{{ item }}"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: "0755"
+  loop:
+    - casc_configs
+    - init.groovy.d
+    - .ssh
+
+- name: Seed Jenkins known_hosts for the runner
+  ansible.builtin.shell: |
+    ssh-keyscan -p {{ jenkins_runner_ssh_port }} -H {{ jenkins_runner_host }} 2>/dev/null
+  register: jenkins_runner_known_hosts
+  changed_when: false
+
+- name: Write Jenkins known_hosts
+  ansible.builtin.copy:
+    content: "{{ jenkins_runner_known_hosts.stdout }}\n"
+    dest: "{{ jenkins_home_dir }}/.ssh/known_hosts"
+    owner: "1000"
+    group: "1000"
+    mode: "0644"
+
+- name: Copy JCasC config from repository
+  ansible.builtin.copy:
+    src: "{{ jenkins_source_casc_dir }}/jenkins.yaml"
+    dest: "{{ jenkins_home_dir }}/casc_configs/jenkins.yaml"
+    remote_src: true
+    owner: "1000"
+    group: "1000"
+    mode: "0644"
+
+- name: Write Jenkins plugin manifest
+  ansible.builtin.template:
+    src: plugins.txt.j2
+    dest: "{{ jenkins_workdir }}/plugins.txt"
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0644"
+
+- name: Write Jenkins init scripts
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ jenkins_home_dir }}/init.groovy.d/{{ item.dest }}"
+    owner: "1000"
+    group: "1000"
+    mode: "0644"
+  loop:
+    - { src: "init-security.groovy.j2", dest: "10-security.groovy" }
+    - { src: "init-runner.groovy.j2", dest: "20-runner.groovy" }
+
+- name: Write Jenkins Dockerfile
+  ansible.builtin.template:
+    src: Dockerfile.j2
+    dest: "{{ jenkins_workdir }}/Dockerfile"
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0644"
+
+- name: Render Jenkins env file
+  ansible.builtin.template:
+    src: jenkins.env.j2
+    dest: "{{ jenkins_workdir }}/.env"
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0600"
+
+- name: Build Jenkins controller image
+  community.docker.docker_image:
+    name: "{{ jenkins_image_name }}"
+    tag: "{{ jenkins_image_tag }}"
+    source: build
+    build:
+      path: "{{ jenkins_workdir }}"
+      dockerfile: Dockerfile
+  become_user: "{{ platform_user }}"
+
+- name: Write Jenkins compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ jenkins_workdir }}/docker-compose.yml"
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0644"
+
+- name: Create Jenkins network
+  community.docker.docker_network:
+    name: "{{ jenkins_network }}"
+    driver: bridge
+    ipam_config:
+      - subnet: "{{ jenkins_subnet }}"
+    state: present
+
+- name: Start Jenkins controller stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ jenkins_workdir }}"
+    project_name: "{{ jenkins_project_name }}"
+    files:
+      - docker-compose.yml
+    state: present
+    pull: missing
+  become_user: "{{ platform_user }}"
+
+- name: Wait for Jenkins to respond
+  ansible.builtin.uri:
+    url: "http://localhost:{{ jenkins_http_port }}/login"
+    status_code: [200, 403]
+    timeout: 10
+  register: jenkins_ready
+  retries: 30
+  delay: 10
+  until: jenkins_ready.status in [200, 403]

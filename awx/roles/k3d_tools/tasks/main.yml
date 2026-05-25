@@ -1,0 +1,46 @@
+---
+- name: Get stable kubectl version string
+  ansible.builtin.uri:
+    url: https://dl.k8s.io/release/stable.txt
+    return_content: true
+  register: kubectl_stable
+  when: kubectl_version == 'stable'
+  tags: [kubectl]
+
+- name: Set kubectl version fact
+  ansible.builtin.set_fact:
+    kubectl_resolved: "{{ kubectl_stable.content | trim if kubectl_version == 'stable' else kubectl_version }}"
+  tags: [kubectl]
+
+- name: Download kubectl
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/release/{{ kubectl_resolved }}/bin/linux/amd64/kubectl"
+    dest: /usr/local/bin/kubectl
+    mode: "0755"
+    owner: root
+    group: root
+  tags: [kubectl]
+
+- name: Install k3d
+  ansible.builtin.shell: |
+    curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+  args:
+    creates: /usr/local/bin/k3d
+  tags: [k3d]
+
+- name: Install Helm
+  ansible.builtin.shell: |
+    curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  args:
+    creates: /usr/local/bin/helm
+  tags: [helm]
+
+- name: Install k9s
+  ansible.builtin.shell: |
+    K9S_VER=$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest | grep tag_name | cut -d'"' -f4)
+    curl -sL "https://github.com/derailed/k9s/releases/download/${K9S_VER}/k9s_Linux_amd64.tar.gz" \
+      | tar xz -C /usr/local/bin k9s
+  args:
+    creates: /usr/local/bin/k9s
+  when: k9s_install | bool
+  tags: [k9s]

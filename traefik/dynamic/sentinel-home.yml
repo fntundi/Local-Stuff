@@ -1,0 +1,53 @@
+# Traefik Dynamic Config — Sentinel-Home
+# Routes via host.docker.internal → k3d NodePorts on host
+# k3d cluster: sentinel-home  |  host ports: 31000 (frontend), 31001 (backend)
+
+http:
+  routers:
+    sentinel-home-frontend:
+      rule: "Host(`sentinel.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: sentinel-home-frontend-svc
+      middlewares: [authentik@file, sentinel-home-security-headers]
+
+    sentinel-home-api:
+      rule: "Host(`sentinel.blackiechan.net`) && PathPrefix(`/api`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: sentinel-home-backend-svc
+      middlewares: [authentik@file, sentinel-home-security-headers, sentinel-home-api-ratelimit]
+      priority: 10
+
+  services:
+    sentinel-home-frontend-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:31000"   # k3d ingress NodePort
+        passHostHeader: true
+
+    sentinel-home-backend-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:31001"   # k3d backend NodePort
+        passHostHeader: true
+
+  middlewares:
+    sentinel-home-security-headers:
+      headers:
+        stsSeconds: 31536000
+        contentTypeNosniff: true
+        frameDeny: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-App: "Sentinel-Home"
+          X-Powered-By: ""
+
+    sentinel-home-api-ratelimit:
+      rateLimit:
+        average: 60
+        burst: 20
+        period: "1m"

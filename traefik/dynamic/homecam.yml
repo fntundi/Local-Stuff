@@ -1,0 +1,79 @@
+# Traefik Dynamic Config — HomeCam (k3d cluster)
+# Routes via host.docker.internal → k3d NodePorts on host
+
+http:
+  routers:
+    homecam-frontend:
+      rule: "Host(`homecam.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: homecam-frontend-svc
+      middlewares: [authentik@file, homecam-security-headers]
+
+    homecam-api:
+      rule: "Host(`homecam.blackiechan.net`) && PathPrefix(`/api`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: homecam-backend-svc
+      middlewares: [authentik@file, homecam-security-headers, homecam-api-ratelimit]
+      priority: 10
+
+    homecam-hls:
+      rule: "Host(`homecam.blackiechan.net`) && PathPrefix(`/hls`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: homecam-hls-svc
+      middlewares: [authentik@file, homecam-security-headers]
+
+  services:
+    homecam-frontend-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:80"   # k3d ingress-nginx NodePort
+        passHostHeader: true
+
+    homecam-backend-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8001"
+        passHostHeader: true
+
+    homecam-hls-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8888"
+        passHostHeader: true
+
+  middlewares:
+    homecam-security-headers:
+      headers:
+        stsSeconds: 31536000
+        contentTypeNosniff: true
+        frameDeny: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-App: "HomeCam"
+          X-Powered-By: ""
+
+    homecam-api-ratelimit:
+      rateLimit:
+        average: 100
+        burst: 50
+        period: "1m"
+
+tcp:
+  routers:
+    homecam-rtsp:
+      entryPoints: [rtsp]
+      rule: "HostSNI(`*`)"
+      service: homecam-rtsp-svc
+
+  services:
+    homecam-rtsp-svc:
+      loadBalancer:
+        servers:
+          - address: "host.docker.internal:8554"

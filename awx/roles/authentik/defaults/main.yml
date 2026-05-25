@@ -1,0 +1,6 @@
+---
+authentik_project_name: authentik
+authentik_compose_dir: "{{ platform_repo_root }}/authentik"
+authentik_version: "2026.2"
+authentik_host: authentik.blackiechan.net
+authentik_server_port: 9000

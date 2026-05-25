@@ -1,0 +1,11 @@
+---
+# Sentinel-Home is currently a skeleton. This playbook will deploy it once the
+# stack is defined. The role emits a clear notice until then.
+- name: Deploy Sentinel-Home
+  hosts: home_servers
+  become: false
+  gather_facts: false
+
+  roles:
+    - role: ../../roles/sentinel_home
+      tags: [sentinel]

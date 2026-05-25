@@ -1,0 +1,9 @@
+---
+- name: Provision Remote Host
+  hosts: all
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: ../../roles/common
+      tags: [common, provision]

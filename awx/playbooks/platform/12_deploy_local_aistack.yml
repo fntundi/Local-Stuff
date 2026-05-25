@@ -1,0 +1,16 @@
+---
+- name: Deploy local-aistack (Hybrid AI Platform)
+  hosts: home_servers
+  become: false
+  gather_facts: true
+
+  pre_tasks:
+    - name: Ensure data directories exist
+      ansible.builtin.include_role:
+        name: ../../roles/platform_dirs
+        tasks_from: aistack
+      tags: [dirs]
+
+  roles:
+    - role: ../../roles/local_aistack
+      tags: [aistack]

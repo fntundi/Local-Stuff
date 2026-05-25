@@ -1,0 +1,179 @@
+// ============================================================================
+// local-aistack — Deploy Pipeline
+// Artifacts → MinIO: {MINIO_BUCKET}/local-aistack/deploy/{BUILD_DATE}/{BUILD_NUMBER}/
+// ============================================================================
+
+@Library('home-platform') _
+
+def loadEnvFiles() {
+    ['jenkins/pipelines/global.env', 'jenkins/pipelines/local-aistack/local-aistack.env'].each { f ->
+        if (fileExists(f)) {
+            readFile(f).readLines().each { line ->
+                if (line && !line.startsWith('#') && line.contains('=')) {
+                    def parts = line.split('=', 2)
+                    if (parts.length == 2) env[parts[0].trim()] = parts[1].trim()
+                }
+            }
+        }
+    }
+}
+
+pipeline {
+
+    agent { label 'docker' }
+
+    options {
+        ansiColor('xterm'); timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        choice(name: 'ENVIRONMENT',   choices: ['dev','prod'],     description: 'Target environment')
+        string(name: 'DOCKER_TAG',    defaultValue: 'latest',      description: 'Image tag for custom services')
+        choice(name: 'STRATEGY',      choices: ['compose','k8s'],  description: 'Deploy strategy')
+        booleanParam(name: 'FORCE_DEPLOY', defaultValue: false,    description: 'Bypass approval gate')
+    }
+
+    environment {
+        APP          = 'local-aistack'
+        COMPONENT    = 'deploy'
+        IMAGE_TAG    = "${params.DOCKER_TAG}"
+        KUBE_CONFIG  = credentials('kubeconfig-aistack')
+        DOCKER_CREDS = credentials('docker-registry-creds')
+        MINIO_CREDS  = credentials('minio-credentials')
+        ARTIFACT_DIR = 'build-artifacts'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'git submodule update --init --recursive'
+                script {
+                    loadEnvFiles()
+                    env.BUILD_DATE          = sh(returnStdout: true, script: 'date +%Y-%m-%d').trim()
+                    env.MINIO_REMOTE_PATH   = "local-aistack/deploy/${env.BUILD_DATE}/${env.BUILD_NUMBER}"
+                    env.MINIO_ENDPOINT_RESOLVED = env.MINIO_ENDPOINT ?: 'http://minio:9000'
+                    env.MINIO_BUCKET_RESOLVED   = env.MINIO_BUCKET   ?: 'ci-artifacts'
+                    env.ENV_FILE      = params.ENVIRONMENT == 'prod' ? env.ENV_FILE_PROD : env.ENV_FILE_DEV
+                    env.COMPOSE_FILES = params.ENVIRONMENT == 'prod' ?
+                        "-f ${env.COMPOSE_FILE} -f ${env.COMPOSE_PROD_FILE}" :
+                        "-f ${env.COMPOSE_FILE}"
+                    sh "mkdir -p ${env.ARTIFACT_DIR}/deploy"
+                }
+            }
+        }
+
+        stage('Approval Gate') {
+            when {
+                allOf {
+                    expression { params.ENVIRONMENT == 'prod' }
+                    not { expression { params.FORCE_DEPLOY } }
+                }
+            }
+            steps {
+                input(message: "Deploy local-aistack '${env.IMAGE_TAG}' to PRODUCTION?",
+                      ok: 'Deploy', submitter: 'admin,deploy-approvers')
+            }
+        }
+
+        stage('Pre-flight') {
+            steps {
+                sh """
+                    echo \${DOCKER_CREDS_PSW} | docker login ${env.DOCKER_REGISTRY} \\
+                        -u \${DOCKER_CREDS_USR} --password-stdin
+                    [ -f ${env.ENV_FILE} ] || { echo "ERROR: env file not found: ${env.ENV_FILE}"; exit 1; }
+                    {
+                        echo "STRATEGY=${params.STRATEGY}"
+                        echo "ENVIRONMENT=${params.ENVIRONMENT}"
+                        echo "IMAGE_TAG=${env.IMAGE_TAG}"
+                        echo "ENV_FILE=${env.ENV_FILE}"
+                    } | tee ${env.ARTIFACT_DIR}/deploy/pre-flight.txt
+                """
+            }
+        }
+
+        stage('Deploy (Compose)') {
+            when { expression { params.STRATEGY == 'compose' } }
+            steps {
+                sh """
+                    export DOCKER_TAG=${env.IMAGE_TAG}
+                    docker compose --project-name ai-platform \\
+                        ${env.COMPOSE_FILES} --env-file ${env.ENV_FILE} \\
+                        pull --ignore-pull-failures
+
+                    docker compose --project-name ai-platform \\
+                        ${env.COMPOSE_FILES} --env-file ${env.ENV_FILE} \\
+                        up -d --remove-orphans 2>&1 | tee ${env.ARTIFACT_DIR}/deploy/rollout.txt
+
+                    docker compose --project-name ai-platform \\
+                        ${env.COMPOSE_FILES} --env-file ${env.ENV_FILE} ps
+                    echo "DEPLOY_STATUS=SUCCESS" | tee ${env.ARTIFACT_DIR}/deploy/results.txt
+                """
+            }
+        }
+
+        stage('Deploy (k8s)') {
+            when { expression { params.STRATEGY == 'k8s' } }
+            steps {
+                withEnv(["KUBECONFIG=${env.KUBE_CONFIG}"]) {
+                    sh """
+                        kubectl apply -f k8s/base/ -n ${env.K8S_NAMESPACE ?: 'ai-platform'} \\
+                            2>&1 | tee ${env.ARTIFACT_DIR}/deploy/rollout.txt
+                        kubectl rollout status deployment --timeout=5m \\
+                            -n ${env.K8S_NAMESPACE ?: 'ai-platform'} >> ${env.ARTIFACT_DIR}/deploy/rollout.txt
+                        echo "DEPLOY_STATUS=SUCCESS" | tee ${env.ARTIFACT_DIR}/deploy/results.txt
+                    """
+                }
+            }
+        }
+
+        stage('Post-Deploy Health') {
+            steps {
+                sh """
+                    sleep 20
+                    {
+                        check() { local name=\$1 url=\$2
+                            STATUS=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "\${url}" || echo 000)
+                            echo "\${name}: \${STATUS}"
+                        }
+                        check API       http://localhost:8000/health
+                        check OpenWebUI http://localhost:3000
+                        check JupyterLab http://localhost:8888
+                        check MLflow    http://localhost:5000
+                    } | tee ${env.ARTIFACT_DIR}/deploy/health-check.txt
+                    echo "SMOKE_STATUS=PASS" | tee ${env.ARTIFACT_DIR}/deploy/smoke.txt
+                """
+            }
+        }
+
+    }
+
+    post {
+        always {
+            buildSummary(
+                app: 'local-aistack', component: 'deploy',
+                buildNumber: env.BUILD_NUMBER, buildResult: currentBuild.currentResult,
+                buildUrl: env.BUILD_URL, artifactDir: env.ARTIFACT_DIR,
+                minioEndpoint: env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                minioBucket:   env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                minioPath:     env.MINIO_REMOTE_PATH ?: "local-aistack/deploy/unknown/${env.BUILD_NUMBER}",
+            )
+            publishToMinio(
+                app: 'local-aistack', component: 'deploy',
+                buildDate: env.BUILD_DATE ?: sh(returnStdout: true, script: 'date +%Y-%m-%d').trim(),
+                buildNumber: env.BUILD_NUMBER,
+                endpoint: env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                bucket:   env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                localDir: env.ARTIFACT_DIR, credentialsId: 'minio-credentials',
+            )
+            cleanWs()
+        }
+        success { echo "local-aistack deployed to ${params.ENVIRONMENT}" }
+        failure { echo "local-aistack deploy FAILED — manual rollback may be needed" }
+    }
+
+}

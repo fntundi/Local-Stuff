@@ -1,0 +1,31 @@
+# Traefik Dynamic Config — AWX (Ansible Automation Platform)
+# AWX runs on home-server and is connected to home-net via its docker-compose.
+# Container: awx-web (port 8052)
+
+http:
+  routers:
+    awx:
+      rule: "Host(`autoans.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: awx-svc
+      middlewares: [authentik@file, awx-security-headers]
+
+  services:
+    awx-svc:
+      loadBalancer:
+        servers:
+          - url: "http://awx-web:8052"
+        passHostHeader: true
+
+  middlewares:
+    awx-security-headers:
+      headers:
+        stsSeconds: 31536000
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-App: "AWX"
+          X-Powered-By: ""

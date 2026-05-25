@@ -1,0 +1,68 @@
+---
+- name: Write BlackieFi .env
+  ansible.builtin.template:
+    src: blackiefi.env.j2
+    dest: "{{ blackiefi_compose_dir }}/env/.env.prod"
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0600"
+  tags: [blackiefi, config]
+
+- name: Check if k3d cluster exists
+  ansible.builtin.command: k3d cluster list -o json
+  register: k3d_list
+  changed_when: false
+  tags: [blackiefi]
+
+- name: Create BlackieFi k3d cluster
+  ansible.builtin.command: >
+    k3d cluster create {{ blackiefi_k3d_cluster }}
+    --port "{{ port_http }}:80@loadbalancer"
+    --port "{{ port_https }}:443@loadbalancer"
+    --registry-create blackiefi-registry:0.0.0.0:{{ blackiefi_registry_port }}
+    --api-port 6552
+  when: blackiefi_k3d_cluster not in (k3d_list.stdout | from_json | map(attribute='name') | list)
+  become_user: "{{ platform_user }}"
+  tags: [blackiefi, cluster]
+
+- name: Create BlackieFi namespace
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ blackiefi_namespace }}"
+    state: present
+  become_user: "{{ platform_user }}"
+  tags: [blackiefi, k8s]
+
+- name: Create BlackieFi secrets
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: blackiefi-secrets
+        namespace: "{{ blackiefi_namespace }}"
+      type: Opaque
+      stringData:
+        POSTGRES_PASSWORD: "{{ blackiefi_postgres_password }}"
+        AUTOMATION_SHARED_KEY: "{{ blackiefi_automation_key }}"
+        BOOTSTRAP_PASSWORD: "{{ blackiefi_bootstrap_password }}"
+  become_user: "{{ platform_user }}"
+  no_log: true
+  tags: [blackiefi, secrets]
+
+- name: Apply BlackieFi k8s manifests
+  kubernetes.core.k8s:
+    src: "{{ blackiefi_compose_dir }}/infra/k8s/{{ item }}"
+    state: present
+  loop:
+    - namespace.yaml
+    - postgres.yaml
+    - llm-service.yaml
+    - api.yaml
+    - web.yaml
+    - ingress.yaml
+    - cronjob.yaml
+  become_user: "{{ platform_user }}"
+  tags: [blackiefi, k8s]

@@ -1,0 +1,70 @@
+version: 1
+metadata:
+  name: sentinel-home
+  labels:
+    blueprints.goauthentik.io/description: "Sentinel-Home — Proxy Provider + Application"
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+
+  # ── Access group ──────────────────────────────────────────────────────────
+  - id: sentinel-home-group
+    model: authentik_core.group
+    state: present
+    identifiers:
+      name: sentinel-home-users
+    attrs:
+      name: sentinel-home-users
+
+  # ── Proxy Provider (forward-auth, single-app mode) ────────────────────────
+  - id: sentinel-home-provider
+    model: authentik_providers_proxy.proxyprovider
+    state: present
+    identifiers:
+      name: Sentinel-Home
+    attrs:
+      name: Sentinel-Home
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-invalidation-flow]]
+      mode: forward_single
+      external_host: https://sentinel.blackiechan.net
+      access_token_validity: hours=24
+      refresh_token_validity: days=7
+      # Trust X-Forwarded-For from Traefik on the same home-net
+      internal_host_ssl_validation: false
+
+  # ── Application ───────────────────────────────────────────────────────────
+  - id: sentinel-home-app
+    model: authentik_core.application
+    state: present
+    identifiers:
+      slug: sentinel-home
+    attrs:
+      name: Sentinel-Home
+      slug: sentinel-home
+      provider: !KeyOf sentinel-home-provider
+      meta_description: "Home security camera monitoring platform"
+      meta_publisher: "Home Platform"
+      open_in_new_tab: false
+      policy_engine_mode: any
+
+  # ── Policy binding — restrict access to sentinel-home-users group ─────────
+  - model: authentik_policies_event_matcher.eventmatcherpolicy
+    state: absent
+    identifiers:
+      name: sentinel-home-group-binding    # remove stale bindings on re-apply
+
+  - id: sentinel-home-group-binding
+    model: authentik_core.policybinding
+    state: present
+    identifiers:
+      order: 10
+      target: !KeyOf sentinel-home-app
+      group: !KeyOf sentinel-home-group
+    attrs:
+      order: 10
+      target: !KeyOf sentinel-home-app
+      group: !KeyOf sentinel-home-group
+      enabled: true
+      negate: false
+      timeout: 30

@@ -1,0 +1,262 @@
+// ============================================================================
+// Sentinel-Home — Frontend CI Pipeline  (Skeleton)
+// All stages wired with reporting + MinIO upload.
+// Fill in TODO sections once the stack is defined.
+//
+// Artifacts → MinIO: {MINIO_BUCKET}/sentinel-home/frontend/{BUILD_DATE}/{BUILD_NUMBER}/{type}/
+// ============================================================================
+
+@Library('home-platform') _
+
+def loadEnvFiles() {
+    ['jenkins/pipelines/global.env', 'jenkins/pipelines/sentinel-home/sentinel-home.env'].each { f ->
+        if (fileExists(f)) {
+            readFile(f).readLines().each { line ->
+                if (line && !line.startsWith('#') && line.contains('=')) {
+                    def parts = line.split('=', 2)
+                    if (parts.length == 2) env[parts[0].trim()] = parts[1].trim()
+                }
+            }
+        }
+    }
+}
+
+pipeline {
+
+    agent none
+
+    options {
+        ansiColor('xterm'); timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '50', daysToKeepStr: '30'))
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['dev','staging','prod'], description: 'Target environment')
+        booleanParam(name: 'SKIP_SONAR',  defaultValue: false, description: 'Skip SonarQube')
+        booleanParam(name: 'SKIP_ZAP',    defaultValue: false, description: 'Skip ZAP DAST')
+        booleanParam(name: 'SKIP_508',    defaultValue: false, description: 'Skip 508 accessibility')
+        booleanParam(name: 'SKIP_DEPLOY', defaultValue: true,  description: 'Skip image push')
+        string(name: 'DOCKER_TAG', defaultValue: '', description: 'Override image tag')
+    }
+
+    environment {
+        APP          = 'sentinel-home'
+        COMPONENT    = 'frontend'
+        BUILD_IMAGE  = 'node:20-alpine'   // TODO: update when framework is chosen
+        FRONTEND_DIR = 'Sentinel-Home/frontend'
+        IMAGE_NAME   = "${env.DOCKER_REGISTRY ?: 'localhost:5000'}/sentinel-home-frontend"
+        SONAR_TOKEN  = credentials('sonarqube-token')
+        DOCKER_CREDS = credentials('docker-registry-creds')
+        MINIO_CREDS  = credentials('minio-credentials')
+        ARTIFACT_DIR = 'build-artifacts'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            agent { label 'docker' }
+            steps {
+                checkout scm
+                sh 'git submodule update --init --recursive'
+                script {
+                    loadEnvFiles()
+                    env.GIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    env.IMAGE_TAG = params.DOCKER_TAG ?: env.GIT_SHORT
+                    env.BUILD_DATE          = sh(returnStdout: true, script: 'date +%Y-%m-%d').trim()
+                    env.MINIO_REMOTE_PATH   = "sentinel-home/frontend/${env.BUILD_DATE}/${env.BUILD_NUMBER}"
+                    env.MINIO_ENDPOINT_RESOLVED = env.MINIO_ENDPOINT ?: 'http://minio:9000'
+                    env.MINIO_BUCKET_RESOLVED   = env.MINIO_BUCKET   ?: 'ci-artifacts'
+                    sh "mkdir -p ${env.ARTIFACT_DIR}/{unit,smoke,functional,regression,zap,sonar,508}"
+                }
+            }
+        }
+
+        stage('Install') {
+            agent { docker { image env.BUILD_IMAGE; reuseNode true } }
+            steps {
+                dir(env.FRONTEND_DIR) {
+                    // TODO: add install command
+                    sh 'yarn install --frozen-lockfile 2>/dev/null || npm ci 2>/dev/null || echo "No package.json — skipping"'
+                }
+            }
+        }
+
+        stage('Lint') {
+            agent { docker { image env.BUILD_IMAGE; reuseNode true } }
+            steps {
+                dir(env.FRONTEND_DIR) {
+                    sh "yarn lint 2>/dev/null | tee ../${env.ARTIFACT_DIR}/lint-report.txt || echo 'TODO: add lint script'"
+                }
+            }
+        }
+
+        stage('Build') {
+            agent { docker { image env.BUILD_IMAGE; reuseNode true } }
+            steps {
+                dir(env.FRONTEND_DIR) {
+                    sh 'yarn build 2>/dev/null || echo "TODO: add build script"'
+                }
+                // TODO: uncomment once Dockerfile exists
+                // sh "docker build --tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.FRONTEND_DIR}"
+                echo "TODO: add Dockerfile to ${env.FRONTEND_DIR}/ to enable Docker image build"
+            }
+        }
+
+        stage('Unit Tests') {
+            agent { docker { image env.BUILD_IMAGE; reuseNode true } }
+            steps {
+                dir(env.FRONTEND_DIR) {
+                    sh """
+                        yarn test --watchAll=false --passWithNoTests \\
+                            2>/dev/null | tee ../${env.ARTIFACT_DIR}/unit/output.txt || echo "TODO: add test script"
+                    """
+                }
+            }
+        }
+
+        stage('Integration Tests') {
+            agent { label 'docker' }
+            stages {
+                stage('Start Stack') {
+                    steps {
+                        sh "mkdir -p ${env.ARTIFACT_DIR}/{smoke,functional,regression}"
+                        // TODO: docker compose up once defined
+                        echo "TODO: start Sentinel-Home stack"
+                        sh "echo 'SMOKE_STATUS=NOT_RUN' > ${env.ARTIFACT_DIR}/smoke/results.txt"
+                    }
+                }
+                stage('Smoke Tests') {
+                    steps {
+                        // TODO: curl health checks
+                        echo "TODO: add smoke tests for ${env.FRONTEND_URL_DEV ?: 'sentinel-home-frontend:3000'}"
+                    }
+                }
+                stage('Functional Tests') {
+                    steps {
+                        echo "TODO: add Playwright functional tests (tag: @functional)"
+                    }
+                }
+                stage('Regression Tests') {
+                    steps {
+                        echo "TODO: add Playwright regression tests (tag: @regression)"
+                    }
+                }
+                stage('Tear Down') {
+                    steps {
+                        sh "docker compose --project-name sentinel-fe-test-${env.BUILD_NUMBER} down --volumes --remove-orphans || true"
+                    }
+                }
+            }
+            post {
+                always {
+                    stash name: "sentinel-fe-int-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/**", allowEmpty: true
+                }
+            }
+        }
+
+        stage('SonarQube') {
+            when { not { expression { params.SKIP_SONAR } } }
+            agent { label 'docker' }
+            steps {
+                sh "mkdir -p ${env.ARTIFACT_DIR}/sonar"
+                sonarScan(
+                    projectKey:  env.SONAR_PROJECT_KEY_FRONTEND ?: 'home-platform.sentinel-home.frontend',
+                    projectName: 'Sentinel-Home Frontend',
+                    sources:     env.FRONTEND_DIR,
+                    language:    'js',  // TODO: update when framework known
+                    exclusions:  '**/node_modules/**,**/build/**',
+                    artifactDir: env.ARTIFACT_DIR,
+                )
+            }
+            post {
+                always {
+                    stash name: "sentinel-fe-sonar-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/sonar/**", allowEmpty: true
+                }
+            }
+        }
+
+        stage('ZAP Scan') {
+            when { not { expression { params.SKIP_ZAP } } }
+            agent { label 'docker' }
+            steps {
+                sh "mkdir -p ${env.ARTIFACT_DIR}/zap"
+                // TODO: start service before ZAP scan
+                zapScan(
+                    target:      env.FRONTEND_URL_DEV ?: 'http://sentinel-home-frontend:3000',
+                    mode:        env.ZAP_SCAN_MODE ?: 'baseline',
+                    reportName:  'sentinel-home-frontend',
+                    network:     'host',
+                    artifactDir: env.ARTIFACT_DIR,
+                )
+            }
+            post {
+                always {
+                    stash name: "sentinel-fe-zap-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/zap/**", allowEmpty: true
+                }
+            }
+        }
+
+        stage('508 Accessibility') {
+            when { not { expression { params.SKIP_508 } } }
+            agent { label 'docker' }
+            steps {
+                sh "mkdir -p ${env.ARTIFACT_DIR}/508"
+                // TODO: start service before 508 scan
+                playwright508(
+                    baseUrl:        env.FRONTEND_URL_DEV ?: 'http://sentinel-home-frontend:3000',
+                    artifactDir:    env.ARTIFACT_DIR,
+                    failOnViolation: false,
+                )
+            }
+            post {
+                always {
+                    stash name: "sentinel-fe-508-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/508/**", allowEmpty: true
+                }
+            }
+        }
+
+    } // end stages
+
+    post {
+        always {
+            node('docker') {
+                checkout scm
+                sh "mkdir -p ${env.ARTIFACT_DIR}/{unit,smoke,functional,regression,zap,sonar,508}"
+                script {
+                    ["sentinel-fe-int-${env.BUILD_NUMBER}",
+                     "sentinel-fe-sonar-${env.BUILD_NUMBER}",
+                     "sentinel-fe-zap-${env.BUILD_NUMBER}",
+                     "sentinel-fe-508-${env.BUILD_NUMBER}"].each { s ->
+                        try { unstash s } catch (e) { echo "Stash ${s} not available" }
+                    }
+                }
+                buildSummary(
+                    app: 'sentinel-home', component: 'frontend',
+                    buildNumber: env.BUILD_NUMBER, buildResult: currentBuild.currentResult,
+                    buildUrl: env.BUILD_URL, artifactDir: env.ARTIFACT_DIR,
+                    minioEndpoint: env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                    minioBucket:   env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                    minioPath:     env.MINIO_REMOTE_PATH ?: "sentinel-home/frontend/unknown/${env.BUILD_NUMBER}",
+                )
+                publishToMinio(
+                    app: 'sentinel-home', component: 'frontend',
+                    buildDate: env.BUILD_DATE ?: sh(returnStdout: true, script: 'date +%Y-%m-%d').trim(),
+                    buildNumber: env.BUILD_NUMBER,
+                    endpoint: env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                    bucket:   env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                    localDir: env.ARTIFACT_DIR, credentialsId: 'minio-credentials',
+                )
+                cleanWs()
+            }
+        }
+        success { echo "Sentinel-Home frontend CI passed" }
+        failure { echo "Sentinel-Home frontend CI FAILED" }
+    }
+
+}

@@ -1,0 +1,31 @@
+# Traefik Dynamic Config — Jenkins CI/CD
+# Jenkins runs on jenkins-server (192.168.1.111:8080), separate host from home-server.
+# Traefik routes from the home-server to Jenkins over the LAN.
+
+http:
+  routers:
+    jenkins:
+      rule: "Host(`leeeroyy.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: jenkins-svc
+      middlewares: [jenkins-security-headers]
+
+  services:
+    jenkins-svc:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.1.111:8080"   # jenkins-server LAN IP
+        passHostHeader: true
+
+  middlewares:
+    jenkins-security-headers:
+      headers:
+        stsSeconds: 31536000
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-App: "Jenkins"
+          X-Powered-By: ""

@@ -1,0 +1,49 @@
+---
+- name: Manage Ollama Models (AI Platform)
+  hosts: home_servers
+  become: false
+  gather_facts: false
+
+  vars:
+    ollama_container: ollama-chat   # target container name
+    # Override with: -e "models_to_pull=['phi3','llama3.2:1b']"
+    models_to_pull:
+      - "{{ aistack_ollama_chat_model }}"
+      - "{{ aistack_ollama_embedding_model }}"
+
+  tasks:
+    - name: List currently loaded models
+      community.docker.docker_container_exec:
+        container: "{{ ollama_container }}"
+        command: ollama list
+      register: current_models
+      changed_when: false
+      ignore_errors: true
+      tags: [list]
+
+    - name: Current models
+      ansible.builtin.debug:
+        msg: "{{ current_models.stdout_lines | default(['container not running']) }}"
+      tags: [list]
+
+    - name: Pull required models
+      community.docker.docker_container_exec:
+        container: "{{ ollama_container }}"
+        command: "ollama pull {{ item }}"
+      loop: "{{ models_to_pull }}"
+      register: pull_results
+      changed_when: "'already up to date' not in (pull_results.stdout | default(''))"
+      tags: [pull]
+
+    - name: List models after pull
+      community.docker.docker_container_exec:
+        container: "{{ ollama_container }}"
+        command: ollama list
+      register: final_models
+      changed_when: false
+      tags: [pull]
+
+    - name: Final model inventory
+      ansible.builtin.debug:
+        msg: "{{ final_models.stdout_lines | default([]) }}"
+      tags: [always]

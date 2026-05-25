@@ -1,0 +1,190 @@
+---
+- name: Install GitLab with Docker + NGINX Reverse Proxy
+  hosts: localhost
+  become: yes
+
+  vars:
+    gitlab_hostname: "gitlab.blackiechan.net"
+    gitlab_container_name: "gitlab"
+    gitlab_image: "gitlab/gitlab-ce:latest"
+    host_ip: 192.168.4.14
+
+    gitlab_config_path: "/srv/gitlab/config"
+    gitlab_data_path: "/srv/gitlab/data"
+    gitlab_logs_path: "/srv/gitlab/logs"
+
+    gitlab_root_password_file: "/srv/gitlab/config/initial_root_password"
+
+  tasks:
+
+  # ---------------------------
+  # System Preparation
+  # ---------------------------
+  - name: Set system hostname
+    hostname:
+      name: "{{ gitlab_hostname }}"
+
+  - name: Ensure hostname is in /etc/hosts
+    lineinfile:
+      path: /etc/hosts
+      regexp: "127.0.1.1"
+      line: "127.0.1.1 {{ gitlab_hostname }}"
+      state: present
+
+  - name: Ensure hostname resolves to server IP
+    lineinfile:
+      path: /etc/hosts
+      line: "{{ ansible_default_ipv4.address }} {{ gitlab_hostname }}"
+      state: present
+
+  - name: Update apt cache
+    apt:
+      update_cache: yes
+
+  - name: Install base dependencies
+    apt:
+      name:
+        - ca-certificates
+        - curl
+        - gnupg
+        - lsb-release
+        - apt-transport-https
+        - nginx
+      state: present
+
+  # ---------------------------
+  # Docker Installation
+  # ---------------------------
+  - name: Add Docker GPG key
+    apt_key:
+      url: https://download.docker.com/linux/ubuntu/gpg
+      state: present
+
+  - name: Add Docker repo
+    apt_repository:
+      repo: "deb https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+      state: present
+
+  - name: Install Docker
+    apt:
+      name:
+        - docker-ce
+        - docker-ce-cli
+        - containerd.io
+      state: present
+      update_cache: yes
+
+  - name: Start Docker
+    service:
+      name: docker
+      state: started
+      enabled: true
+
+  # ---------------------------
+  # GitLab Directories
+  # ---------------------------
+  - name: Create GitLab directories
+    file:
+      path: "{{ item }}"
+      state: directory
+      mode: "0755"
+    loop:
+      - "{{ gitlab_config_path }}"
+      - "{{ gitlab_data_path }}"
+      - "{{ gitlab_logs_path }}"
+
+  # ---------------------------
+  # Run GitLab Container (internal port only)
+  # ---------------------------
+  - name: Pull GitLab image
+    community.docker.docker_image:
+      name: "{{ gitlab_image }}"
+      source: pull
+
+  - name: Run GitLab container (internal only)
+    community.docker.docker_container:
+      name: "{{ gitlab_container_name }}"
+      image: "{{ gitlab_image }}"
+      state: started
+      restart_policy: always
+      hostname: "{{ gitlab_hostname }}"
+      published_ports:
+        - "{{ host_ip }}:8080:80"
+        - "{{ host_ip }}:2222:22"
+      volumes:
+        - "{{ gitlab_config_path }}:/etc/gitlab"
+        - "{{ gitlab_logs_path }}:/var/log/gitlab"
+        - "{{ gitlab_data_path }}:/var/opt/gitlab"
+      shm_size: "256m"
+      env:
+        GITLAB_OMNIBUS_CONFIG: |
+          external_url 'http://{{ gitlab_hostname }}'
+          nginx['listen_port'] = 80
+          nginx['listen_https'] = false
+
+  # ---------------------------
+  # NGINX Reverse Proxy
+  # ---------------------------
+  - name: Create NGINX config for GitLab
+    copy:
+      dest: /etc/nginx/sites-available/gitlab
+      content: |
+        server {
+            listen 80;
+            server_name {{ gitlab_hostname }};
+
+            location / {
+                proxy_pass http://{{ host_ip }}:8080;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto http;
+                proxy_read_timeout 300;
+            }
+        }
+
+  - name: Enable GitLab site
+    file:
+      src: /etc/nginx/sites-available/gitlab
+      dest: /etc/nginx/sites-enabled/gitlab
+      state: link
+      force: yes
+
+  - name: Remove default NGINX site
+    file:
+      path: /etc/nginx/sites-enabled/default
+      state: absent
+
+  - name: Restart NGINX
+    service:
+      name: nginx
+      state: restarted
+      enabled: true
+
+  # ---------------------------
+  # Wait for GitLab Ready
+  # ---------------------------
+  - name: Wait for GitLab root password file
+    wait_for:
+      path: "{{ gitlab_root_password_file }}"
+      state: present
+      timeout: 900
+
+  - name: Read root password file
+    slurp:
+      src: "{{ gitlab_root_password_file }}"
+    register: root_password_file
+
+  - name: Extract root password
+    set_fact:
+      gitlab_root_password: "{{ (root_password_file.content | b64decode).split('\n') | select('search', 'Password:') | list | first | regex_replace('Password: ', '') }}"
+
+  - name: Display GitLab credentials
+    debug:
+      msg:
+        - "========================================="
+        - "GitLab is ready!"
+        - "URL: http://{{ gitlab_hostname }}"
+        - "Username: root"
+        - "Password: {{ gitlab_root_password }}"
+        - "========================================="

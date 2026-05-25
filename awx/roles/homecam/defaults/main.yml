@@ -1,0 +1,3 @@
+---
+homecam_deploy_strategy: compose
+homecam_project_name: homecam

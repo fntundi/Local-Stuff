@@ -1,0 +1,33 @@
+import jenkins.model.Jenkins
+import hudson.model.User
+import hudson.security.HudsonPrivateSecurityRealm
+import hudson.security.FullControlOnceLoggedInAuthorizationStrategy
+
+def jenkins = Jenkins.instance
+def adminUser = System.getenv('JENKINS_ADMIN_USER') ?: 'admin'
+def adminPassword = System.getenv('JENKINS_ADMIN_PASSWORD') ?: 'admin'
+
+if (!adminUser || !adminPassword || adminPassword == 'admin') {
+    throw new IllegalStateException('Jenkins admin credentials must be provided by AWX')
+}
+
+if (!(jenkins.getSecurityRealm() instanceof HudsonPrivateSecurityRealm)) {
+    def realm = new HudsonPrivateSecurityRealm(false)
+    jenkins.setSecurityRealm(realm)
+}
+
+def realm = jenkins.getSecurityRealm()
+try {
+    def existingUser = User.getById(adminUser, false)
+    if (existingUser != null) {
+        existingUser.delete()
+    }
+    realm.createAccount(adminUser, adminPassword)
+} catch (Throwable ignored) {
+    throw new IllegalStateException("Unable to create Jenkins admin account '${adminUser}'", ignored)
+}
+
+def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+strategy.setAllowAnonymousRead(false)
+jenkins.setAuthorizationStrategy(strategy)
+jenkins.save()

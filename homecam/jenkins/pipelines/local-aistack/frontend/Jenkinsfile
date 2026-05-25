@@ -1,0 +1,224 @@
+// ============================================================================
+// local-aistack — Frontend CI Pipeline
+// Web UIs: OpenWebUI, JupyterLab, MLflow, MinIO Console, Portainer
+//
+// There is no custom-built frontend — all UIs are third-party images.
+// This pipeline validates deployed service health, runs ZAP DAST scans
+// against each web UI, and runs Playwright 508 accessibility tests on
+// the primary user-facing surfaces (OpenWebUI, JupyterLab).
+//
+// Stages:
+//   Checkout → Start Web UIs → Service Health → ZAP (parallel per UI) →
+//   508 Accessibility → Tear Down
+// ============================================================================
+
+@Library('home-platform') _
+
+pipeline {
+
+    agent none
+
+    options {
+        ansiColor('xterm')
+        timestamps()
+        timeout(time: 45, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+    }
+
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'staging', 'prod'],
+            description: 'Target environment'
+        )
+        booleanParam(name: 'SKIP_ZAP',     defaultValue: false, description: 'Skip ZAP scans')
+        booleanParam(name: 'SKIP_508',     defaultValue: false, description: 'Skip 508 accessibility')
+        booleanParam(name: 'ZAP_FULL',     defaultValue: false, description: 'Use full ZAP scan (slow)')
+        booleanParam(name: 'SKIP_OPENWEBUI',   defaultValue: false, description: 'Skip OpenWebUI tests')
+        booleanParam(name: 'SKIP_JUPYTERLAB',  defaultValue: false, description: 'Skip JupyterLab tests')
+    )
+
+    environment {
+        APP          = 'local-aistack'
+        COMPONENT    = 'frontend'
+        COMPOSE_FILE = 'compose/docker-compose.yml'
+        SONAR_TOKEN  = credentials('sonarqube-token')
+        DOCKER_CREDS = credentials('docker-registry-creds')
+        PROJECT_NAME = "aistack-fe-${env.BUILD_NUMBER}"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            agent { label 'docker' }
+            steps {
+                checkout scm
+                script {
+                    def globalEnv = readFile('jenkins/pipelines/global.env')
+                    def appEnv    = readFile('jenkins/pipelines/local-aistack/local-aistack.env')
+                    [globalEnv, appEnv].each { block ->
+                        block.readLines().each { line ->
+                            if (line && !line.startsWith('#') && line.contains('=')) {
+                                def (k, v) = line.split('=', 2)
+                                env[k.trim()] = v.trim()
+                            }
+                        }
+                    }
+                    env.ZAP_MODE = params.ZAP_FULL ? 'full' : 'baseline'
+                }
+            }
+        }
+
+        stage('Start Web UIs') {
+            agent { label 'docker' }
+            steps {
+                sh """
+                    docker compose \\
+                        --project-name ${env.PROJECT_NAME} \\
+                        --file ${env.COMPOSE_FILE} \\
+                        up -d --wait \\
+                        postgres openwebui jupyterlab mlflow minio portainer litellm
+                """
+                sh 'sleep 15'  // UIs need a few extra seconds after container ready
+            }
+        }
+
+        stage('Service Health Checks') {
+            agent { label 'docker' }
+            steps {
+                sh """
+                    check() {
+                        local name=\$1 url=\$2
+                        STATUS=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "\${url}" || echo '000')
+                        if echo "\${STATUS}" | grep -qE '^(2|3)'; then
+                            echo "  ✓ \${name} [\${STATUS}]"
+                        else
+                            echo "  ✗ \${name} [\${STATUS}] — WARN: service may not be ready"
+                        fi
+                    }
+
+                    echo '=== Web UI Health ==='
+                    check 'OpenWebUI'  'http://localhost:3000'
+                    check 'JupyterLab' 'http://localhost:8888'
+                    check 'MLflow'     'http://localhost:5000'
+                    check 'MinIO'      'http://localhost:9001'
+                    check 'Portainer'  'http://localhost:9000'
+                    check 'LiteLLM'    'http://localhost:4000'
+                """
+            }
+        }
+
+        stage('ZAP Scans') {
+            when { not { expression { params.SKIP_ZAP } } }
+            parallel {
+
+                stage('ZAP — OpenWebUI') {
+                    when { not { expression { params.SKIP_OPENWEBUI } } }
+                    agent { label 'docker' }
+                    steps {
+                        zapScan(
+                            target: 'http://localhost:3000',
+                            mode: env.ZAP_MODE,
+                            reportName: 'aistack-openwebui',
+                            network: 'host',
+                        )
+                    }
+                }
+
+                stage('ZAP — JupyterLab') {
+                    when { not { expression { params.SKIP_JUPYTERLAB } } }
+                    agent { label 'docker' }
+                    steps {
+                        zapScan(
+                            target: 'http://localhost:8888',
+                            mode: env.ZAP_MODE,
+                            reportName: 'aistack-jupyterlab',
+                            network: 'host',
+                        )
+                    }
+                }
+
+                stage('ZAP — MLflow') {
+                    agent { label 'docker' }
+                    steps {
+                        zapScan(
+                            target: 'http://localhost:5000',
+                            mode: env.ZAP_MODE,
+                            reportName: 'aistack-mlflow',
+                            network: 'host',
+                        )
+                    }
+                }
+
+                stage('ZAP — API Server') {
+                    agent { label 'docker' }
+                    steps {
+                        zapScan(
+                            target: 'http://localhost:8000',
+                            mode: env.ZAP_MODE,
+                            reportName: 'aistack-api',
+                            network: 'host',
+                        )
+                    }
+                }
+
+            } // end parallel ZAP
+        }
+
+        stage('508 — OpenWebUI') {
+            when {
+                allOf {
+                    not { expression { params.SKIP_508 } }
+                    not { expression { params.SKIP_OPENWEBUI } }
+                }
+            }
+            agent { label 'docker' }
+            steps {
+                playwright508(
+                    dir: '.',
+                    baseUrl: 'http://localhost:3000',
+                    reportDir: 'accessibility-results/openwebui',
+                    wcagLevel: env.WCAG_LEVEL ?: 'wcag21aa',
+                    failOnViolation: false,
+                )
+            }
+        }
+
+        stage('508 — JupyterLab') {
+            when {
+                allOf {
+                    not { expression { params.SKIP_508 } }
+                    not { expression { params.SKIP_JUPYTERLAB } }
+                }
+            }
+            agent { label 'docker' }
+            steps {
+                playwright508(
+                    dir: '.',
+                    baseUrl: 'http://localhost:8888',
+                    reportDir: 'accessibility-results/jupyterlab',
+                    wcagLevel: env.WCAG_LEVEL ?: 'wcag21aa',
+                    failOnViolation: false,
+                )
+            }
+        }
+
+    } // end stages
+
+    post {
+        always {
+            node('docker') {
+                sh """
+                    docker compose \\
+                        --project-name ${env.PROJECT_NAME} \\
+                        --file compose/docker-compose.yml \\
+                        down --volumes --remove-orphans || true
+                """
+                cleanWs()
+            }
+        }
+        success { echo "local-aistack frontend/UI scans passed" }
+        failure { echo "local-aistack frontend/UI scans had failures — review ZAP and 508 reports" }
+    }
+
+}

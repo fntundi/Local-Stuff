@@ -1,0 +1,786 @@
+---
+# AWX Configuration Playbook — "AWX as Code"
+# Run once after AWX is deployed to create all required objects.
+#
+# Prerequisites:
+#   pip install awxkit
+#   ansible-galaxy collection install awx.awx
+#
+# Usage:
+#   ansible-playbook awx_config/configure_awx.yml \
+#     -e "awx_host=http://localhost:8052" \
+#     -e "awx_username=admin" \
+#     -e "awx_password=<password>"
+
+- name: Configure AWX — Home Platform
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  collections:
+    - awx.awx
+
+  vars:
+    controller_host:     "{{ awx_host | default('http://localhost:8052') }}"
+    controller_username: "{{ awx_username | default('admin') }}"
+    controller_password: "{{ awx_password }}"
+
+  tasks:
+
+    # ── Organization ──────────────────────────────────────────────────────────
+    - name: Create organization
+      awx.awx.organization:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "{{ awx_organization }}"
+        description: "Home automation platform (HomeCam, AI Stack, BlackieFi, Sentinel)"
+        state: present
+      tags: [org]
+
+    # ── Credential Types ──────────────────────────────────────────────────────
+    - name: Create custom credential type — Home Platform Vault
+      awx.awx.credential_type:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "Home Platform Vault"
+        kind: cloud
+        description: "All application secrets for the home platform"
+        inputs:
+          fields:
+            - id: vault_traefik_dashboard_users
+              type: string
+              label: "Traefik Dashboard Users (htpasswd)"
+              secret: true
+            - id: vault_homecam_mongo_password
+              type: string
+              label: "HomeCam MongoDB Password"
+              secret: true
+            - id: vault_homecam_jwt_secret
+              type: string
+              label: "HomeCam JWT Secret"
+              secret: true
+            - id: vault_homecam_encryption_key
+              type: string
+              label: "HomeCam Encryption Key"
+              secret: true
+            - id: vault_aistack_postgres_password
+              type: string
+              label: "AI Stack PostgreSQL Password"
+              secret: true
+            - id: vault_aistack_qdrant_api_key
+              type: string
+              label: "Qdrant API Key"
+              secret: true
+            - id: vault_aistack_ap_encryption_key
+              type: string
+              label: "Activepieces Encryption Key"
+              secret: true
+            - id: vault_aistack_ap_jwt_secret
+              type: string
+              label: "Activepieces JWT Secret"
+              secret: true
+            - id: vault_aistack_openwebui_secret_key
+              type: string
+              label: "OpenWebUI Secret Key"
+              secret: true
+            - id: vault_aistack_jupyter_token
+              type: string
+              label: "JupyterLab Token"
+              secret: true
+            - id: vault_aistack_minio_root_password
+              type: string
+              label: "MinIO Root Password"
+              secret: true
+            - id: vault_aistack_portainer_password
+              type: string
+              label: "Portainer Admin Password"
+              secret: true
+            - id: vault_aistack_litellm_master_key
+              type: string
+              label: "LiteLLM Master Key"
+              secret: true
+            - id: vault_aistack_langfuse_secret_key
+              type: string
+              label: "Langfuse Secret Key"
+              secret: true
+            - id: vault_aistack_langfuse_public_key
+              type: string
+              label: "Langfuse Public Key"
+              secret: true
+            - id: vault_aistack_langfuse_nextauth_secret
+              type: string
+              label: "Langfuse NextAuth Secret"
+              secret: true
+            - id: vault_aistack_langfuse_salt
+              type: string
+              label: "Langfuse Salt"
+              secret: true
+            - id: vault_aistack_langfuse_enc_key
+              type: string
+              label: "Langfuse Encryption Key"
+              secret: true
+            - id: vault_aistack_api_jwt_secret
+              type: string
+              label: "AI Platform API JWT Secret"
+              secret: true
+            - id: vault_cloudflare_tunnel_token
+              type: string
+              label: "Cloudflare Tunnel Token"
+              secret: true
+            - id: vault_blackiefi_postgres_password
+              type: string
+              label: "BlackieFi PostgreSQL Password"
+              secret: true
+            - id: vault_blackiefi_automation_key
+              type: string
+              label: "BlackieFi Automation Key"
+              secret: true
+            - id: vault_blackiefi_bootstrap_password
+              type: string
+              label: "BlackieFi Bootstrap Password"
+              secret: true
+            - id: vault_awx_admin_password
+              type: string
+              label: "AWX Admin Password"
+              secret: true
+            - id: vault_jenkins_admin_password
+              type: string
+              label: "Jenkins Admin Password"
+              secret: true
+            - id: vault_jenkins_git_user
+              type: string
+              label: "Jenkins Git Username"
+              secret: true
+            - id: vault_jenkins_git_token
+              type: string
+              label: "Jenkins Git Token"
+              secret: true
+            - id: vault_jenkins_sonarqube_token
+              type: string
+              label: "Jenkins SonarQube Token"
+              secret: true
+            - id: vault_jenkins_docker_user
+              type: string
+              label: "Jenkins Docker Registry User"
+              secret: true
+            - id: vault_jenkins_docker_password
+              type: string
+              label: "Jenkins Docker Registry Password"
+              secret: true
+            - id: vault_jenkins_minio_access_key
+              type: string
+              label: "Jenkins MinIO Access Key"
+              secret: true
+            - id: vault_jenkins_minio_secret_key
+              type: string
+              label: "Jenkins MinIO Secret Key"
+              secret: true
+            - id: vault_jenkins_runner_ssh_private_key
+              type: string
+              label: "Jenkins Runner SSH Private Key"
+              secret: true
+            - id: vault_sonarqube_db_password
+              type: string
+              label: "SonarQube DB Password"
+              secret: true
+            - id: vault_authentik_secret_key
+              type: string
+              label: "Authentik Secret Key"
+              secret: true
+            - id: vault_authentik_pg_password
+              type: string
+              label: "Authentik PostgreSQL Password"
+              secret: true
+            - id: vault_sentinel_jwt_secret
+              type: string
+              label: "Sentinel-Home JWT Secret"
+              secret: true
+            - id: vault_sentinel_mongo_password
+              type: string
+              label: "Sentinel-Home MongoDB Password"
+              secret: true
+            - id: vault_sentinel_encryption_key
+              type: string
+              label: "Sentinel-Home Encryption Key"
+              secret: true
+        injectors:
+          extra_vars:
+            vault_traefik_dashboard_users:    "{{ '{{' }} vault_traefik_dashboard_users {{ '}}' }}"
+            vault_homecam_mongo_password:     "{{ '{{' }} vault_homecam_mongo_password {{ '}}' }}"
+            vault_homecam_jwt_secret:         "{{ '{{' }} vault_homecam_jwt_secret {{ '}}' }}"
+            vault_homecam_encryption_key:     "{{ '{{' }} vault_homecam_encryption_key {{ '}}' }}"
+            vault_aistack_postgres_password:  "{{ '{{' }} vault_aistack_postgres_password {{ '}}' }}"
+            vault_aistack_qdrant_api_key:     "{{ '{{' }} vault_aistack_qdrant_api_key {{ '}}' }}"
+            vault_aistack_ap_encryption_key:  "{{ '{{' }} vault_aistack_ap_encryption_key {{ '}}' }}"
+            vault_aistack_ap_jwt_secret:      "{{ '{{' }} vault_aistack_ap_jwt_secret {{ '}}' }}"
+            vault_aistack_openwebui_secret_key: "{{ '{{' }} vault_aistack_openwebui_secret_key {{ '}}' }}"
+            vault_aistack_jupyter_token:      "{{ '{{' }} vault_aistack_jupyter_token {{ '}}' }}"
+            vault_aistack_minio_root_password: "{{ '{{' }} vault_aistack_minio_root_password {{ '}}' }}"
+            vault_aistack_portainer_password: "{{ '{{' }} vault_aistack_portainer_password {{ '}}' }}"
+            vault_aistack_litellm_master_key: "{{ '{{' }} vault_aistack_litellm_master_key {{ '}}' }}"
+            vault_aistack_langfuse_secret_key: "{{ '{{' }} vault_aistack_langfuse_secret_key {{ '}}' }}"
+            vault_aistack_langfuse_public_key: "{{ '{{' }} vault_aistack_langfuse_public_key {{ '}}' }}"
+            vault_aistack_langfuse_nextauth_secret: "{{ '{{' }} vault_aistack_langfuse_nextauth_secret {{ '}}' }}"
+            vault_aistack_langfuse_salt:      "{{ '{{' }} vault_aistack_langfuse_salt {{ '}}' }}"
+            vault_aistack_langfuse_enc_key:   "{{ '{{' }} vault_aistack_langfuse_enc_key {{ '}}' }}"
+            vault_aistack_api_jwt_secret:     "{{ '{{' }} vault_aistack_api_jwt_secret {{ '}}' }}"
+            vault_cloudflare_tunnel_token:    "{{ '{{' }} vault_cloudflare_tunnel_token {{ '}}' }}"
+            vault_blackiefi_postgres_password: "{{ '{{' }} vault_blackiefi_postgres_password {{ '}}' }}"
+            vault_blackiefi_automation_key:   "{{ '{{' }} vault_blackiefi_automation_key {{ '}}' }}"
+            vault_blackiefi_bootstrap_password: "{{ '{{' }} vault_blackiefi_bootstrap_password {{ '}}' }}"
+            vault_awx_admin_password:         "{{ '{{' }} vault_awx_admin_password {{ '}}' }}"
+            vault_jenkins_admin_password:     "{{ '{{' }} vault_jenkins_admin_password {{ '}}' }}"
+            vault_jenkins_git_user:           "{{ '{{' }} vault_jenkins_git_user {{ '}}' }}"
+            vault_jenkins_git_token:          "{{ '{{' }} vault_jenkins_git_token {{ '}}' }}"
+            vault_jenkins_sonarqube_token:    "{{ '{{' }} vault_jenkins_sonarqube_token {{ '}}' }}"
+            vault_jenkins_docker_user:        "{{ '{{' }} vault_jenkins_docker_user {{ '}}' }}"
+            vault_jenkins_docker_password:    "{{ '{{' }} vault_jenkins_docker_password {{ '}}' }}"
+            vault_jenkins_minio_access_key:   "{{ '{{' }} vault_jenkins_minio_access_key {{ '}}' }}"
+            vault_jenkins_minio_secret_key:   "{{ '{{' }} vault_jenkins_minio_secret_key {{ '}}' }}"
+            vault_jenkins_runner_ssh_private_key:  "{{ '{{' }} vault_jenkins_runner_ssh_private_key {{ '}}' }}"
+            vault_sonarqube_db_password:      "{{ '{{' }} vault_sonarqube_db_password {{ '}}' }}"
+            vault_authentik_secret_key:       "{{ '{{' }} vault_authentik_secret_key {{ '}}' }}"
+            vault_authentik_pg_password:      "{{ '{{' }} vault_authentik_pg_password {{ '}}' }}"
+            vault_sentinel_jwt_secret:        "{{ '{{' }} vault_sentinel_jwt_secret {{ '}}' }}"
+            vault_sentinel_mongo_password:    "{{ '{{' }} vault_sentinel_mongo_password {{ '}}' }}"
+            vault_sentinel_encryption_key:    "{{ '{{' }} vault_sentinel_encryption_key {{ '}}' }}"
+        state: present
+      tags: [credentials]
+
+    # ── Credentials ───────────────────────────────────────────────────────────
+    - name: Create Machine credential (SSH)
+      awx.awx.credential:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "Home Server SSH"
+        organization: "{{ awx_organization }}"
+        credential_type: Machine
+        inputs:
+          username: bchan
+          ssh_key_data: "{{ lookup('file', '~/.ssh/id_ed25519') }}"
+        state: present
+      tags: [credentials]
+
+    - name: Create SCM credential (Git)
+      awx.awx.credential:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "GitHub SSH"
+        organization: "{{ awx_organization }}"
+        credential_type: "Source Control"
+        inputs:
+          ssh_key_data: "{{ lookup('file', '~/.ssh/id_ed25519') }}"
+        state: present
+      tags: [credentials]
+
+    # ── Execution Environments ────────────────────────────────────────────────
+    - name: Register base-ee
+      awx.awx.execution_environment:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "base-ee"
+        image: "localhost/home-platform/base-ee:latest"
+        pull: missing
+        organization: "{{ awx_organization }}"
+        state: present
+      tags: [ee]
+
+    - name: Register docker-ee
+      awx.awx.execution_environment:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "docker-ee"
+        image: "localhost/home-platform/docker-ee:latest"
+        pull: missing
+        organization: "{{ awx_organization }}"
+        state: present
+      tags: [ee]
+
+    - name: Register k8s-ee
+      awx.awx.execution_environment:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "k8s-ee"
+        image: "localhost/home-platform/k8s-ee:latest"
+        pull: missing
+        organization: "{{ awx_organization }}"
+        state: present
+      tags: [ee]
+
+    # ── Inventory ─────────────────────────────────────────────────────────────
+    - name: Create inventory
+      awx.awx.inventory:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "Home Platform"
+        organization: "{{ awx_organization }}"
+        description: "Home Platform + isolated CI VMs (Home, SonarQube, Jenkins, runner)"
+        state: present
+      tags: [inventory]
+
+    - name: Add home-server host
+      awx.awx.host:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: home-server
+        inventory: "Home Platform"
+        enabled: true
+        variables:
+          ansible_host: 192.168.1.100
+          ansible_user: bchan
+        state: present
+      tags: [inventory]
+
+    - name: Add sonarqube-server host
+      awx.awx.host:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: sonarqube-server
+        inventory: "Home Platform"
+        enabled: true
+        variables:
+          ansible_host: 192.168.1.110
+          ansible_user: bchan
+        state: present
+      tags: [inventory]
+
+    - name: Add jenkins-server host
+      awx.awx.host:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: jenkins-server
+        inventory: "Home Platform"
+        enabled: true
+        variables:
+          ansible_host: 192.168.1.111
+          ansible_user: bchan
+        state: present
+      tags: [inventory]
+
+    - name: Add jenkins-runner host
+      awx.awx.host:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: jenkins-runner
+        inventory: "Home Platform"
+        enabled: true
+        variables:
+          ansible_host: 192.168.1.112
+          ansible_user: bchan
+        state: present
+      tags: [inventory]
+
+    - name: Create home inventory groups
+      awx.awx.group:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "{{ item }}"
+        inventory: "Home Platform"
+        hosts: [home-server]
+        state: present
+      loop:
+        - home_servers
+        - infra
+        - platform
+        - ops
+      tags: [inventory]
+
+    - name: Create service inventory groups
+      awx.awx.group:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "{{ item.name }}"
+        inventory: "Home Platform"
+        hosts: "{{ item.hosts }}"
+        state: present
+      loop:
+        - { name: sonarqube_servers, hosts: [sonarqube-server] }
+        - { name: jenkins_servers, hosts: [jenkins-server] }
+        - { name: jenkins_runners, hosts: [jenkins-runner] }
+      tags: [inventory]
+
+    # ── Project ───────────────────────────────────────────────────────────────
+    - name: Create AWX project
+      awx.awx.project:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "{{ awx_project_name }}"
+        organization: "{{ awx_organization }}"
+        scm_type: git
+        scm_url: "{{ awx_scm_url }}"
+        scm_branch: "{{ awx_scm_branch }}"
+        scm_credential: "GitHub SSH"
+        scm_update_on_launch: true
+        scm_delete_on_update: false
+        default_environment: "docker-ee"
+        state: present
+      tags: [project]
+
+    # ── Job Templates ─────────────────────────────────────────────────────────
+    - name: Create job templates
+      awx.awx.job_template:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        organization: "{{ awx_organization }}"
+        project: "{{ awx_project_name }}"
+        inventory: "Home Platform"
+        ask_variables_on_launch: false
+        become_enabled: "{{ item.become | default(false) }}"
+        execution_environment: "{{ item.ee | default('docker-ee') }}"
+        limit: "{{ item.limit | default(omit) }}"
+        credentials:
+          - "Home Server SSH"
+          - "Home Platform Vault"
+        name:      "{{ item.name }}"
+        playbook:  "{{ item.playbook }}"
+        state: present
+      loop:
+        # Infrastructure
+        - name: "Infra | 01 Provision Server"
+          playbook: awx/playbooks/infra/01_provision_server.yml
+          become: true
+          ee: base-ee
+        - name: "Infra | 02 Install Docker"
+          playbook: awx/playbooks/infra/02_install_docker.yml
+          become: true
+          ee: base-ee
+        - name: "Infra | 03 Install k3d Tools"
+          playbook: awx/playbooks/infra/03_install_k3d_tools.yml
+          become: true
+          ee: base-ee
+        # Platform
+        - name: "Deploy | Traefik Gateway"
+          playbook: awx/playbooks/platform/10_deploy_traefik.yml
+          ee: docker-ee
+        - name: "Deploy | Authentik"
+          playbook: awx/playbooks/platform/09_deploy_authentik.yml
+          ee: docker-ee
+        - name: "Deploy | HomeCam"
+          playbook: awx/playbooks/platform/11_deploy_homecam.yml
+          ee: k8s-ee
+        - name: "Deploy | AI Platform"
+          playbook: awx/playbooks/platform/12_deploy_local_aistack.yml
+          ee: docker-ee
+        - name: "Deploy | BlackieFi"
+          playbook: awx/playbooks/platform/13_deploy_blackiefi.yml
+          ee: k8s-ee
+        - name: "Deploy | Sentinel-Home"
+          playbook: awx/playbooks/platform/14_deploy_sentinel_home.yml
+          ee: k8s-ee
+        - name: "Deploy | Full Stack"
+          playbook: awx/playbooks/platform/00_deploy_all.yml
+          ee: k8s-ee
+        # SonarQube / Jenkins / Runner bootstrap
+        - name: "SonarQube | 01 Provision Host"
+          playbook: awx/playbooks/ci/01_provision_server.yml
+          become: true
+          ee: base-ee
+          limit: sonarqube_servers
+        - name: "SonarQube | 02 Install Docker"
+          playbook: awx/playbooks/ci/02_install_docker.yml
+          become: true
+          ee: base-ee
+          limit: sonarqube_servers
+        # SonarQube / Jenkins / Runner deployments
+        - name: "SonarQube | 03 Deploy"
+          playbook: awx/playbooks/ci/10_deploy_sonarqube.yml
+          ee: docker-ee
+          limit: sonarqube_servers
+        - name: "Jenkins | 01 Provision Host"
+          playbook: awx/playbooks/ci/01_provision_server.yml
+          become: true
+          ee: base-ee
+          limit: jenkins_servers
+        - name: "Jenkins | 02 Install Docker"
+          playbook: awx/playbooks/ci/02_install_docker.yml
+          become: true
+          ee: base-ee
+          limit: jenkins_servers
+        - name: "Jenkins | 03 Deploy"
+          playbook: awx/playbooks/ci/11_deploy_jenkins.yml
+          ee: docker-ee
+          limit: jenkins_servers
+        - name: "Jenkins Runner | 01 Provision Host"
+          playbook: awx/playbooks/ci/01_provision_server.yml
+          become: true
+          ee: base-ee
+          limit: jenkins_runners
+        - name: "Jenkins Runner | 02 Install Docker"
+          playbook: awx/playbooks/ci/02_install_docker.yml
+          become: true
+          ee: base-ee
+          limit: jenkins_runners
+        - name: "Jenkins Runner | 03 Deploy"
+          playbook: awx/playbooks/ci/12_deploy_jenkins_runner.yml
+          ee: base-ee
+          limit: jenkins_runners
+        # Operations
+        - name: "Ops | Health Check"
+          playbook: awx/playbooks/ops/20_health_check.yml
+          ee: docker-ee
+        - name: "Ops | Backup All"
+          playbook: awx/playbooks/ops/21_backup.yml
+          ee: docker-ee
+        - name: "Ops | Maintenance"
+          playbook: awx/playbooks/ops/22_maintenance.yml
+          ee: docker-ee
+        - name: "Ops | Update Platform"
+          playbook: awx/playbooks/ops/23_update_platform.yml
+          ee: docker-ee
+        - name: "Ops | Manage Ollama Models"
+          playbook: awx/playbooks/ops/24_manage_models.yml
+          ee: docker-ee
+        - name: "Ops | Manage Authentik"
+          playbook: awx/playbooks/ops/25_manage_authentik.yml
+          ee: docker-ee
+        - name: "Ops | Manage Sentinel-Home"
+          playbook: awx/playbooks/ops/26_manage_sentinel_home.yml
+          ee: k8s-ee
+      tags: [templates]
+
+    # ── Schedules ─────────────────────────────────────────────────────────────
+    - name: Schedule health checks (every 15 min)
+      awx.awx.schedule:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "Health Check — every 15m"
+        unified_job_template: "Ops | Health Check"
+        rrule: "DTSTART:20240101T000000Z RRULE:FREQ=MINUTELY;INTERVAL=15"
+        enabled: true
+        state: present
+      tags: [schedules]
+
+    - name: Schedule daily backup (02:00)
+      awx.awx.schedule:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "Backup — daily 02:00"
+        unified_job_template: "Ops | Backup All"
+        rrule: "DTSTART:20240101T020000Z RRULE:FREQ=DAILY"
+        enabled: true
+        state: present
+      tags: [schedules]
+
+    - name: Schedule weekly maintenance (Sun 03:00)
+      awx.awx.schedule:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "Maintenance — weekly Sunday 03:00"
+        unified_job_template: "Ops | Maintenance"
+        rrule: "DTSTART:20240107T030000Z RRULE:FREQ=WEEKLY;BYDAY=SU"
+        enabled: true
+        state: present
+      tags: [schedules]
+
+    # ── Workflow Templates ────────────────────────────────────────────────────
+    - name: Create Bootstrap Host workflow
+      awx.awx.workflow_job_template:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "Bootstrap Host"
+        organization: "{{ awx_organization }}"
+        description: "Full host provisioning: OS hardening → Docker → k3d tools"
+        inventory: "Home Platform"
+        state: present
+      tags: [workflows]
+
+    - name: "Bootstrap Host — node: Provision"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Bootstrap Host"
+        identifier: provision
+        unified_job_template: "Infra | 01 Provision Server"
+        state: present
+      register: node_provision
+      tags: [workflows]
+
+    - name: "Bootstrap Host — node: Install Docker"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Bootstrap Host"
+        identifier: install_docker
+        unified_job_template: "Infra | 02 Install Docker"
+        success_nodes: ["{{ node_provision.id }}"]
+        state: present
+      register: node_docker
+      tags: [workflows]
+
+    - name: "Bootstrap Host — node: Install k3d"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Bootstrap Host"
+        identifier: install_k3d
+        unified_job_template: "Infra | 03 Install k3d Tools"
+        success_nodes: ["{{ node_docker.id }}"]
+        state: present
+      tags: [workflows]
+
+    - name: Create Full Stack Deploy workflow
+      awx.awx.workflow_job_template:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "Full Stack Deploy"
+        organization: "{{ awx_organization }}"
+        description: "Deploy all platform apps in dependency order"
+        inventory: "Home Platform"
+        state: present
+      tags: [workflows]
+
+    - name: "Full Stack — node: Traefik"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Full Stack Deploy"
+        identifier: traefik
+        unified_job_template: "Deploy | Traefik Gateway"
+        state: present
+      register: node_traefik
+      tags: [workflows]
+
+    - name: "Full Stack — node: HomeCam (after Traefik)"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Full Stack Deploy"
+        identifier: homecam
+        unified_job_template: "Deploy | HomeCam"
+        success_nodes: ["{{ node_traefik.id }}"]
+        state: present
+      register: node_homecam
+      tags: [workflows]
+
+    - name: "Full Stack — node: AI Platform (after Traefik)"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Full Stack Deploy"
+        identifier: aistack
+        unified_job_template: "Deploy | AI Platform"
+        success_nodes: ["{{ node_traefik.id }}"]
+        state: present
+      register: node_aistack
+      tags: [workflows]
+
+    - name: "Full Stack — node: Authentik (after Traefik)"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Full Stack Deploy"
+        identifier: authentik
+        unified_job_template: "Deploy | Authentik"
+        success_nodes: ["{{ node_traefik.id }}"]
+        state: present
+      register: node_authentik
+      tags: [workflows]
+
+    - name: "Full Stack — node: HomeCam (after Authentik)"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Full Stack Deploy"
+        identifier: homecam
+        unified_job_template: "Deploy | HomeCam"
+        success_nodes: ["{{ node_authentik.id }}"]
+        state: present
+      register: node_homecam
+      tags: [workflows]
+
+    - name: "Full Stack — node: AI Platform (after Authentik)"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Full Stack Deploy"
+        identifier: aistack
+        unified_job_template: "Deploy | AI Platform"
+        success_nodes: ["{{ node_authentik.id }}"]
+        state: present
+      register: node_aistack
+      tags: [workflows]
+
+    - name: "Full Stack — node: BlackieFi (after Authentik)"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Full Stack Deploy"
+        identifier: blackiefi
+        unified_job_template: "Deploy | BlackieFi"
+        success_nodes: ["{{ node_authentik.id }}"]
+        state: present
+      tags: [workflows]
+
+    - name: "Full Stack — node: Sentinel-Home (after Authentik)"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Full Stack Deploy"
+        identifier: sentinel_home
+        unified_job_template: "Deploy | Sentinel-Home"
+        success_nodes: ["{{ node_authentik.id }}"]
+        state: present
+      tags: [workflows]

@@ -1,0 +1,3 @@
+---
+blackiefi_deploy_strategy: k8s
+blackiefi_project_name: blackiefi

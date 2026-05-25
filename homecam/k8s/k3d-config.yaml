@@ -1,0 +1,36 @@
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: sentinel-noc
+servers: 1
+agents: 1
+network: ai-home-shared
+ports:
+  - port: 30080:30080
+    nodeFilters:
+      - loadbalancer
+  - port: 30081:30081
+    nodeFilters:
+      - loadbalancer
+  - port: 30888:30888
+    nodeFilters:
+      - loadbalancer
+  - port: 8554:8554
+    nodeFilters:
+      - loadbalancer
+  - port: 8888:8888
+    nodeFilters:
+      - loadbalancer
+options:
+  k3d:
+    kubeAPI:
+      hostIP: "0.0.0.0"
+      hostPort: "6551"
+  k3s:
+    extraArgs:
+      - arg: "--disable=traefik"
+        nodeFilters:
+          - server:*
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true

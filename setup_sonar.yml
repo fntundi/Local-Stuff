@@ -1,0 +1,231 @@
+---
+- name: Install Docker CE on RHEL 8 and Ubuntu (Conflict-Free)
+  hosts: localhost
+  become: true
+  gather_facts: true
+
+  vars:
+    docker_packages:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+
+    # Comprehensive list of conflicting packages
+    docker_conflicts_common:
+      - docker
+      - docker-client
+      - docker-client-latest
+      - docker-common
+      - docker-latest
+      - docker-latest-logrotate
+      - docker-logrotate
+      - docker-engine
+      - docker.io
+      - podman
+      - buildah
+      - skopeo
+      - runc
+      - containerd
+
+    docker_conflicts_rhel: []
+    docker_conflicts_ubuntu:
+      - moby-engine
+      - moby-cli
+
+  tasks:
+    - name: Clear cached facts
+      ansible.builtin.meta: clear_facts
+
+    - name: Re-gather fresh facts
+      ansible.builtin.setup:
+    # -----------------------------
+    # Pre-checks
+    # -----------------------------
+    - name: Ensure supported OS
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution in ["RedHat", "CentOS", "Rocky", "AlmaLinux", "Ubuntu"]
+        fail_msg: "Unsupported OS. This playbook supports RHEL-based and Ubuntu systems only."
+
+    # -----------------------------
+    # Stop running containers safely
+    # -----------------------------
+    - name: Get running containers
+      ansible.builtin.command: docker ps -q
+      register: running_containers
+      failed_when: false
+      changed_when: false
+
+    - name: Stop running containers if any exist
+      ansible.builtin.command: docker stop {{ item }}
+      loop: "{{ running_containers.stdout_lines }}"
+      when: running_containers.stdout_lines | length > 0
+
+    # -----------------------------
+    # Remove ALL conflicting packages
+    # -----------------------------
+    - name: Remove conflicting packages (RHEL)
+      ansible.builtin.dnf:
+        name: "{{ docker_conflicts_common + docker_conflicts_rhel }}"
+        state: absent
+      when: ansible_os_family == "RedHat"
+
+    - name: Remove conflicting packages (Ubuntu)
+      ansible.builtin.apt:
+        name: "{{ docker_conflicts_common + docker_conflicts_ubuntu }}"
+        state: absent
+        purge: true
+        autoremove: true
+      when: ansible_os_family == "Debian"
+
+    # -----------------------------
+    # Ensure no leftover containerd/runc binaries
+    # -----------------------------
+    - name: Remove leftover container runtime binaries
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /usr/bin/containerd
+        - /usr/bin/containerd-shim
+        - /usr/bin/containerd-shim-runc-v2
+        - /usr/bin/runc
+      ignore_errors: true
+
+    # -----------------------------
+    # Install dependencies
+    # -----------------------------
+    - name: Install dependencies (RHEL)
+      ansible.builtin.dnf:
+        name: dnf-plugins-core
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Install dependencies (Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Debian"
+
+    # -----------------------------
+    # Add Docker repository
+    # -----------------------------
+    - name: Add Docker repo (RHEL)
+      ansible.builtin.yum_repository:
+        name: docker-ce-stable
+        description: Docker CE Stable Repo
+        baseurl: https://download.docker.com/linux/rhel/8/x86_64/stable
+        gpgcheck: true
+        gpgkey: https://download.docker.com/linux/rhel/gpg
+        enabled: true
+      when: ansible_os_family == "RedHat"
+
+    - name: Add Docker GPG key (Ubuntu)
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Add Docker repo (Ubuntu)
+      ansible.builtin.apt_repository:
+        repo: >
+          deb [arch=amd64]
+          https://download.docker.com/linux/ubuntu
+          {{ ansible_lsb.codename }} stable
+        state: present
+      when: ansible_os_family == "Debian"
+
+    # -----------------------------
+    # Install Docker
+    # -----------------------------
+    - name: Install Docker (RHEL)
+      ansible.builtin.dnf:
+        name: "{{ docker_packages }}"
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Install Docker (Ubuntu)
+      ansible.builtin.apt:
+        name: "{{ docker_packages }}"
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Debian"
+
+    # -----------------------------
+    # Enable & start Docker
+    # -----------------------------
+    - name: Enable and start Docker
+      ansible.builtin.systemd:
+        name: docker
+        enabled: true
+        state: started
+
+    # -----------------------------
+    # Fix socket permissions
+    # -----------------------------
+    - name: Ensure docker group exists
+      ansible.builtin.group:
+        name: docker
+        state: present
+
+    - name: Set ownership of Docker socket
+      ansible.builtin.file:
+        path: /var/run/docker.sock
+        owner: root
+        group: docker
+        mode: '0660'
+      ignore_errors: true
+
+    # -----------------------------
+    # Validate installation (STRICT)
+    # -----------------------------
+    - name: Gather installed package facts
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: Validate docker-ce installed (RHEL)
+      ansible.builtin.assert:
+        that:
+          - "'docker-ce' in ansible_facts.packages"
+          - "'docker-ce-cli' in ansible_facts.packages"
+        fail_msg: "docker-ce is not properly installed on RHEL system"
+      when: ansible_os_family == "RedHat"
+
+    # -----------------------------
+    # Validate installation
+    # -----------------------------
+    - name: Check Docker version
+      ansible.builtin.command: docker --version
+      register: docker_version_output
+      changed_when: false
+
+    - name: Show Docker version
+      ansible.builtin.debug:
+        msg: "{{ docker_version_output.stdout }}"
+
+    - name: Check Docker service status
+      ansible.builtin.systemd:
+        name: docker
+      register: docker_service_status
+
+    - name: Assert Docker is running
+      ansible.builtin.assert:
+        that:
+          - docker_service_status.status.ActiveState == "active"
+        fail_msg: "Docker service is not running"
+
+    - name: Check Docker binary path
+      ansible.builtin.command: which docker
+      register: docker_path
+      changed_when: false
+
+    - name: Ensure Docker binary path is correct
+      ansible.builtin.assert:
+        that:
+          - docker_path.stdout == "/usr/bin/docker"
+        fail_msg: "Unexpected docker binary path detected"

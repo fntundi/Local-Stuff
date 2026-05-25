@@ -1,0 +1,9 @@
+---
+- name: Deploy Authentik
+  hosts: home_servers
+  become: false
+  gather_facts: true
+
+  roles:
+    - role: ../../roles/authentik
+      tags: [authentik]

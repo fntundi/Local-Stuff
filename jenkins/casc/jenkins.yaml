@@ -1,0 +1,127 @@
+# Jenkins Configuration as Code
+# Apply via: Manage Jenkins → Configuration as Code → Apply new configuration
+
+jenkins:
+  systemMessage: "Home Platform CI/CD — HomeCam | local-aistack | Sentinel-Home"
+  numExecutors: 0
+  mode: EXCLUSIVE
+
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: DOCKER_REGISTRY
+            value: "${JENKINS_DOCKER_REGISTRY}"
+          - key: SONARQUBE_URL
+            value: "${JENKINS_SONARQUBE_URL}"
+          - key: MINIO_ENDPOINT
+            value: "${JENKINS_MINIO_ENDPOINT}"
+          - key: MINIO_BUCKET
+            value: "${JENKINS_MINIO_BUCKET}"
+          - key: ZAP_IMAGE
+            value: "ghcr.io/zaproxy/zaproxy:stable"
+          - key: TRAEFIK_NETWORK
+            value: "${JENKINS_TRAEFIK_NETWORK}"
+
+  views:
+    - dashboard:
+        name: "Overview"
+        description: "All apps — last build status at a glance"
+        includeRegex: ".*"
+        columns: ["status","weather","jobName","lastSuccess","lastFailure","lastDuration","buildButton"]
+
+    - listView:
+        name: "HomeCam"
+        description: "All HomeCam pipelines"
+        includeRegex: "HomeCam/.*"
+        columns: ["status","weather","jobName","lastSuccess","lastFailure","lastDuration","buildButton"]
+
+    - listView:
+        name: "local-aistack"
+        description: "All local-aistack pipelines"
+        includeRegex: "local-aistack/.*"
+        columns: ["status","weather","jobName","lastSuccess","lastFailure","lastDuration","buildButton"]
+
+    - listView:
+        name: "Sentinel-Home"
+        description: "All Sentinel-Home pipelines"
+        includeRegex: "Sentinel-Home/.*"
+        columns: ["status","weather","jobName","lastSuccess","lastFailure","lastDuration","buildButton"]
+
+    - listView:
+        name: "Security Scans"
+        description: "ZAP and SonarQube jobs across all apps"
+        includeRegex: ".*(sonar|zap|security).*"
+        columns: ["status","weather","jobName","lastSuccess","lastFailure","lastDuration","buildButton"]
+
+    - listView:
+        name: "Deployments"
+        description: "All deployment pipelines"
+        includeRegex: ".*/Deploy/.*"
+        columns: ["status","weather","jobName","lastSuccess","lastFailure","lastDuration","buildButton"]
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              id: "sonarqube-token"
+              description: "SonarQube analysis token"
+              secret: "${SONARQUBE_TOKEN}"
+          - usernamePassword:
+              id: "docker-registry-creds"
+              description: "Docker registry login"
+              username: "${DOCKER_USER}"
+              password: "${DOCKER_PASSWORD}"
+          - usernamePassword:
+              id: "minio-credentials"
+              description: "MinIO access key / secret key for CI artifact storage"
+              username: "${MINIO_ACCESS_KEY}"
+              password: "${MINIO_SECRET_KEY}"
+          - file:
+              id: "kubeconfig-homecam"
+              description: "kubeconfig for HomeCam k3d cluster"
+              fileName: "kubeconfig-homecam"
+              secretBytes: "${KUBECONFIG_HOMECAM}"
+          - file:
+              id: "kubeconfig-aistack"
+              description: "kubeconfig for local-aistack k8s"
+              fileName: "kubeconfig-aistack"
+              secretBytes: "${KUBECONFIG_AISTACK}"
+          - file:
+              id: "kubeconfig-sentinel"
+              description: "kubeconfig for Sentinel-Home cluster"
+              fileName: "kubeconfig-sentinel"
+              secretBytes: "${KUBECONFIG_SENTINEL}"
+          - usernamePassword:
+              id: "git-credentials"
+              description: "Git SCM credentials"
+              username: "${GIT_USER}"
+              password: "${GIT_TOKEN}"
+
+unclassified:
+  sonarGlobalConfiguration:
+    buildWrapperEnabled: true
+    installations:
+      - name: "SonarQube"
+        serverUrl: "${JENKINS_SONARQUBE_URL}"
+        credentialsId: "sonarqube-token"
+
+  globalLibraries:
+    libraries:
+      - name: "home-platform"
+        defaultVersion: "main"
+        implicit: false
+        allowVersionOverride: true
+        retriever:
+          modernSCM:
+            scm:
+              git:
+                remote: "${GIT_REPO_URL}"
+                credentialsId: "git-credentials"
+
+# Required plugins:
+# blueocean, configuration-as-code, job-dsl, workflow-aggregator,
+# pipeline-stage-view, git, docker-workflow, docker-plugin, sonar,
+# htmlpublisher, junit, build-monitor-plugin, dashboard-view,
+# cloudbees-folder, credentials-binding, timestamper, ansicolor,
+# email-ext, slack (optional)

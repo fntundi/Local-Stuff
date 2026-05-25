@@ -1,0 +1,45 @@
+---
+# Deploy the full home platform in dependency order:
+#   1. Authentik
+#   2. Traefik gateway (creates home-net)
+#   3. HomeCam (Sentinel NOC)
+#   4. Sentinel-Home
+#   5. local-aistack (AI Platform)
+#   6. BlackieFi
+#
+# Use tags to skip individual apps:
+#   ansible-playbook 00_deploy_all.yml --skip-tags blackiefi
+- name: Full Platform Deploy
+  hosts: home_servers
+  become: false
+  gather_facts: true
+
+  pre_tasks:
+    - name: Clone / update hub repository
+      ansible.builtin.git:
+        repo: "{{ repo_clone_url }}"
+        dest: "{{ platform_repo_root }}"
+        version: "{{ repo_branch }}"
+        recursive: true
+        update: true
+        accept_hostkey: true
+      tags: [always]
+
+    - name: Create all data directories
+      ansible.builtin.include_role:
+        name: ../../roles/platform_dirs
+      tags: [dirs]
+
+  roles:
+    - role: ../../roles/authentik
+      tags: [authentik]
+    - role: ../../roles/traefik
+      tags: [traefik]
+    - role: ../../roles/homecam
+      tags: [homecam]
+    - role: ../../roles/sentinel_home
+      tags: [sentinel]
+    - role: ../../roles/local_aistack
+      tags: [aistack]
+    - role: ../../roles/blackiefi
+      tags: [blackiefi]

@@ -1,0 +1,191 @@
+// ============================================================================
+// HomeCam — Deploy Pipeline
+// Kubernetes via k3d (sentinel-noc namespace)
+// Reports: deploy log + post-smoke results → MinIO deploy/{type}/
+// ============================================================================
+
+@Library('home-platform') _
+
+def loadEnvFiles() {
+    ['jenkins/pipelines/global.env', 'jenkins/pipelines/homecam/homecam.env'].each { f ->
+        if (fileExists(f)) {
+            readFile(f).readLines().each { line ->
+                if (line && !line.startsWith('#') && line.contains('=')) {
+                    def parts = line.split('=', 2)
+                    if (parts.length == 2) env[parts[0].trim()] = parts[1].trim()
+                }
+            }
+        }
+    }
+}
+
+pipeline {
+
+    agent { label 'docker' }
+
+    options {
+        ansiColor('xterm')
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        choice(name: 'ENVIRONMENT',   choices: ['dev','staging','prod'], description: 'Target environment')
+        string(name: 'DOCKER_TAG',    defaultValue: 'latest',  description: 'Image tag to deploy')
+        booleanParam(name: 'FORCE_DEPLOY',        defaultValue: false, description: 'Skip approval gate')
+        booleanParam(name: 'RUN_POST_DEPLOY_SMOKE', defaultValue: true, description: 'Run smoke tests after deploy')
+    }
+
+    environment {
+        APP          = 'homecam'
+        COMPONENT    = 'deploy'
+        NAMESPACE    = 'sentinel-noc'
+        K8S_DIR      = 'homecam/k8s'
+        IMAGE_TAG    = "${params.DOCKER_TAG}"
+        KUBE_CONFIG  = credentials('kubeconfig-homecam')
+        DOCKER_CREDS = credentials('docker-registry-creds')
+        MINIO_CREDS  = credentials('minio-credentials')
+        ARTIFACT_DIR = 'build-artifacts'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'git submodule update --init --recursive'
+                script {
+                    loadEnvFiles()
+                    env.BUILD_DATE          = sh(returnStdout: true, script: 'date +%Y-%m-%d').trim()
+                    env.MINIO_REMOTE_PATH   = "homecam/deploy/${env.BUILD_DATE}/${env.BUILD_NUMBER}"
+                    env.MINIO_ENDPOINT_RESOLVED = env.MINIO_ENDPOINT ?: 'http://minio:9000'
+                    env.MINIO_BUCKET_RESOLVED   = env.MINIO_BUCKET   ?: 'ci-artifacts'
+                    sh "mkdir -p ${env.ARTIFACT_DIR}/deploy"
+                }
+            }
+        }
+
+        stage('Approval Gate') {
+            when {
+                allOf {
+                    expression { params.ENVIRONMENT == 'prod' }
+                    not { expression { params.FORCE_DEPLOY } }
+                }
+            }
+            steps {
+                input(
+                    message: "Deploy HomeCam '${env.IMAGE_TAG}' to PRODUCTION?",
+                    ok: 'Deploy',
+                    submitter: 'admin,deploy-approvers',
+                )
+            }
+        }
+
+        stage('Pre-flight') {
+            steps {
+                withEnv(["KUBECONFIG=${env.KUBE_CONFIG}"]) {
+                    sh """
+                        kubectl config current-context | tee ${env.ARTIFACT_DIR}/deploy/pre-flight.txt
+                        kubectl get nodes -o wide           >> ${env.ARTIFACT_DIR}/deploy/pre-flight.txt
+                        kubectl get pods -n ${env.NAMESPACE} -o wide >> ${env.ARTIFACT_DIR}/deploy/pre-flight.txt 2>&1 || true
+                        docker manifest inspect ${env.DOCKER_REGISTRY}/homecam-backend:${env.IMAGE_TAG} \
+                            && echo "backend image: OK" || echo "backend image: NOT FOUND"
+                        docker manifest inspect ${env.DOCKER_REGISTRY}/homecam-frontend:${env.IMAGE_TAG} \
+                            && echo "frontend image: OK" || echo "frontend image: NOT FOUND"
+                    """
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                withEnv(["KUBECONFIG=${env.KUBE_CONFIG}"]) {
+                    sh """
+                        kubectl set image deployment/backend  backend=${env.DOCKER_REGISTRY}/homecam-backend:${env.IMAGE_TAG}  -n ${env.NAMESPACE}
+                        kubectl set image deployment/frontend frontend=${env.DOCKER_REGISTRY}/homecam-frontend:${env.IMAGE_TAG} -n ${env.NAMESPACE}
+                        kubectl apply -f ${env.K8S_DIR}/ -n ${env.NAMESPACE}
+                        kubectl rollout status deployment/backend  -n ${env.NAMESPACE} --timeout=5m 2>&1 | tee ${env.ARTIFACT_DIR}/deploy/rollout.txt
+                        kubectl rollout status deployment/frontend -n ${env.NAMESPACE} --timeout=5m >> ${env.ARTIFACT_DIR}/deploy/rollout.txt
+                    """
+                }
+                sh """
+                    echo "DEPLOY_STATUS=SUCCESS" | tee ${env.ARTIFACT_DIR}/deploy/results.txt
+                    echo "ENVIRONMENT=${params.ENVIRONMENT}" >> ${env.ARTIFACT_DIR}/deploy/results.txt
+                    echo "IMAGE_TAG=${env.IMAGE_TAG}"       >> ${env.ARTIFACT_DIR}/deploy/results.txt
+                    echo "TIMESTAMP=\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ${env.ARTIFACT_DIR}/deploy/results.txt
+                """
+            }
+        }
+
+        stage('Post-Deploy Smoke') {
+            when { expression { params.RUN_POST_DEPLOY_SMOKE } }
+            steps {
+                script {
+                    def url = params.ENVIRONMENT == 'prod' ? env.FRONTEND_URL_PROD : env.FRONTEND_URL_DEV
+                    sh """
+                        sleep 10
+                        SMOKE_STATUS=FAIL
+                        curl -sf ${url}/ -o /dev/null && SMOKE_STATUS=PASS
+                        echo "SMOKE_STATUS=\${SMOKE_STATUS}"      | tee ${env.ARTIFACT_DIR}/deploy/smoke.txt
+                        echo "FRONTEND_URL=${url}"               >> ${env.ARTIFACT_DIR}/deploy/smoke.txt
+                        [ "\${SMOKE_STATUS}" = "PASS" ]
+                    """
+                }
+            }
+        }
+
+        stage('Tag Git') {
+            when { expression { params.ENVIRONMENT == 'prod' } }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'git-credentials',
+                        usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
+                    sh """
+                        git tag -a "deploy-prod-${env.IMAGE_TAG}" \\
+                            -m "Production deploy: ${env.IMAGE_TAG}"
+                        git push https://\${GIT_USER}:\${GIT_TOKEN}@\$(git remote get-url origin | sed 's|https://||') \\
+                            "deploy-prod-${env.IMAGE_TAG}" || true
+                    """
+                }
+            }
+        }
+
+    } // end stages
+
+    post {
+        always {
+            buildSummary(
+                app: 'homecam', component: 'deploy',
+                buildNumber: env.BUILD_NUMBER,
+                buildResult: currentBuild.currentResult,
+                buildUrl:    env.BUILD_URL,
+                artifactDir: env.ARTIFACT_DIR,
+                minioEndpoint: env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                minioBucket:   env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                minioPath:     env.MINIO_REMOTE_PATH ?: "homecam/deploy/unknown/${env.BUILD_NUMBER}",
+            )
+            publishToMinio(
+                app: 'homecam', component: 'deploy',
+                buildDate:   env.BUILD_DATE ?: sh(returnStdout: true, script: 'date +%Y-%m-%d').trim(),
+                buildNumber: env.BUILD_NUMBER,
+                endpoint:    env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                bucket:      env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                localDir:    env.ARTIFACT_DIR,
+                credentialsId: 'minio-credentials',
+            )
+            cleanWs()
+        }
+        success { echo "HomeCam deployed to ${params.ENVIRONMENT} — tag: ${env.IMAGE_TAG}" }
+        failure {
+            withEnv(["KUBECONFIG=${env.KUBE_CONFIG}"]) {
+                sh """
+                    echo '=== AUTO ROLLBACK ==='
+                    kubectl rollout undo deployment/backend  -n ${env.NAMESPACE} || true
+                    kubectl rollout undo deployment/frontend -n ${env.NAMESPACE} || true
+                """
+            }
+        }
+    }
+
+}

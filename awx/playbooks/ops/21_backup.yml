@@ -1,0 +1,82 @@
+---
+- name: Backup Platform Data
+  hosts: home_servers
+  become: false
+  gather_facts: true
+
+  vars:
+    backup_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}"
+    backup_dest: "{{ backup_dir }}/{{ backup_timestamp }}"
+
+  tasks:
+    - name: Create backup destination
+      ansible.builtin.file:
+        path: "{{ backup_dest }}"
+        state: directory
+        mode: "0750"
+      tags: [always]
+
+    - name: Backup PostgreSQL (AI Platform)
+      community.docker.docker_container:
+        name: "backup-postgres-{{ backup_timestamp }}"
+        image: postgres:14-alpine
+        command: >
+          pg_dumpall -h postgres -U postgres
+          -f /backup/postgres_{{ backup_timestamp }}.sql
+        volumes:
+          - "{{ aistack_compose_dir }}/data/postgres:/var/lib/postgresql/data:ro"
+          - "{{ backup_dest }}:/backup"
+        env:
+          PGPASSWORD: "{{ aistack_postgres_password }}"
+        networks:
+          - name: "{{ aistack_network }}"
+        detach: false
+        auto_remove: true
+      ignore_errors: true
+      tags: [postgres]
+
+    - name: Backup MongoDB (HomeCam)
+      community.docker.docker_container:
+        name: "backup-mongo-{{ backup_timestamp }}"
+        image: mongo:6
+        command: >
+          mongodump
+          --uri="mongodb://{{ homecam_mongo_user }}:{{ homecam_mongo_password }}@mongodb:27017"
+          --out=/backup/mongodb_{{ backup_timestamp }}
+        volumes:
+          - "{{ backup_dest }}:/backup"
+        networks:
+          - name: "{{ homecam_network }}"
+        detach: false
+        auto_remove: true
+      ignore_errors: true
+      tags: [mongodb]
+
+    - name: Compress backup
+      community.general.archive:
+        path: "{{ backup_dest }}"
+        dest: "{{ backup_dir }}/backup_{{ backup_timestamp }}.tar.gz"
+        format: gz
+        remove: true
+      tags: [always]
+
+    - name: Remove backups older than {{ backup_retention }} days
+      ansible.builtin.find:
+        paths: "{{ backup_dir }}"
+        patterns: "backup_*.tar.gz"
+        age: "{{ backup_retention }}d"
+        recurse: false
+      register: old_backups
+      tags: [cleanup]
+
+    - name: Delete old backups
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_backups.files }}"
+      tags: [cleanup]
+
+    - name: Backup summary
+      ansible.builtin.debug:
+        msg: "Backup complete: {{ backup_dir }}/backup_{{ backup_timestamp }}.tar.gz. Removed {{ old_backups.files | length }} old backup(s)."
+      tags: [always]

@@ -1,0 +1,127 @@
+# Traefik Dynamic Config — local-aistack (Docker Compose on home-net)
+# Hostnames match local-aistack submodule env/.env.prod.example
+
+http:
+  routers:
+    aistack-openwebui:
+      rule: "Host(`chat.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: openwebui-svc
+      middlewares: [authentik@file, aistack-security-headers]
+
+    aistack-api:
+      rule: "Host(`api.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: aistack-api-svc
+      middlewares: [authentik@file, aistack-security-headers]
+
+    aistack-jupyterlab:
+      rule: "Host(`lab.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: jupyterlab-svc
+      middlewares: [authentik@file, aistack-security-headers]
+
+    aistack-mlflow:
+      rule: "Host(`mlflow.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: mlflow-svc
+      middlewares: [authentik@file, aistack-security-headers]
+
+    aistack-minio:
+      rule: "Host(`minio.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: minio-console-svc
+      middlewares: [authentik@file, aistack-security-headers]
+
+    aistack-litellm:
+      rule: "Host(`litellm.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: litellm-svc
+      middlewares: [authentik@file, aistack-security-headers]
+
+    aistack-langfuse:
+      rule: "Host(`langfuse.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: langfuse-svc
+      middlewares: [authentik@file, aistack-security-headers]
+
+    aistack-opensearch:
+      rule: "Host(`opensearch.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: opensearch-dashboards-svc
+      middlewares: [authentik@file, aistack-security-headers]
+
+    aistack-portainer:
+      rule: "Host(`portainer.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: portainer-svc
+      middlewares: [authentik@file, aistack-security-headers]
+
+    aistack-workflows:
+      rule: "Host(`workflows.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: activepieces-svc
+      middlewares: [authentik@file, aistack-security-headers]
+
+  services:
+    openwebui-svc:
+      loadBalancer:
+        servers: [{url: "http://openwebui:3000"}]
+    aistack-api-svc:
+      loadBalancer:
+        servers: [{url: "http://api-server:8000"}]
+    jupyterlab-svc:
+      loadBalancer:
+        servers: [{url: "http://jupyterlab:8888"}]
+    mlflow-svc:
+      loadBalancer:
+        servers: [{url: "http://mlflow:5000"}]
+    minio-console-svc:
+      loadBalancer:
+        servers: [{url: "http://minio:9001"}]
+    litellm-svc:
+      loadBalancer:
+        servers: [{url: "http://litellm:4000"}]
+    langfuse-svc:
+      loadBalancer:
+        servers: [{url: "http://langfuse:3000"}]
+    opensearch-dashboards-svc:
+      loadBalancer:
+        servers: [{url: "http://opensearch-dashboards:5601"}]
+    portainer-svc:
+      loadBalancer:
+        servers: [{url: "http://portainer:9000"}]
+    activepieces-svc:
+      loadBalancer:
+        servers: [{url: "http://activepieces:3000"}]
+
+  middlewares:
+    aistack-security-headers:
+      headers:
+        stsSeconds: 31536000
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-App: "local-aistack"
+          X-Powered-By: ""

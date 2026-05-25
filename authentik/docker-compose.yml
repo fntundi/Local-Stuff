@@ -1,0 +1,91 @@
+# =============================================================================
+# Authentik Stack
+# Shared identity provider for the Home Platform.
+#
+# Prerequisite:
+#   docker compose --project-name traefik-gw --file traefik/docker-compose.yml up -d
+# =============================================================================
+
+volumes:
+  authentik_database:
+  authentik_media:
+
+services:
+  authentik-postgresql:
+    image: postgres:16-alpine
+    container_name: authentik-postgresql
+    restart: unless-stopped
+    networks:
+      - home-net
+    environment:
+      POSTGRES_DB: authentik
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: ${AUTHENTIK_PG_PASSWORD:?AUTHENTIK_PG_PASSWORD is required}
+    volumes:
+      - authentik_database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik -d authentik"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  authentik:
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_VERSION:-2026.2}
+    container_name: authentik-server
+    restart: unless-stopped
+    command: server
+    networks:
+      - home-net
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - authentik_media:/media
+      - ./blueprints:/blueprints:ro
+    environment:
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?AUTHENTIK_SECRET_KEY is required}
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgresql
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_PG_PASSWORD:?AUTHENTIK_PG_PASSWORD is required}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: ${AUTHENTIK_ERROR_REPORTING__ENABLED:-false}
+      TZ: ${TZ:-America/New_York}
+    depends_on:
+      authentik-postgresql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:9000/-/health/live/\", timeout=5).read()'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/worker:${AUTHENTIK_VERSION:-2026.2}
+    container_name: authentik-worker
+    restart: unless-stopped
+    command: worker
+    networks:
+      - home-net
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - authentik_media:/media
+      - ./blueprints:/blueprints:ro
+    environment:
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?AUTHENTIK_SECRET_KEY is required}
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgresql
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_PG_PASSWORD:?AUTHENTIK_PG_PASSWORD is required}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: ${AUTHENTIK_ERROR_REPORTING__ENABLED:-false}
+      TZ: ${TZ:-America/New_York}
+    depends_on:
+      authentik-postgresql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "ak healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+networks:
+  home-net:
+    external: true

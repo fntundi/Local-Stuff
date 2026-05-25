@@ -1,0 +1,5 @@
+---
+traefik_version: v3.1
+traefik_project_name: traefik-gw
+authentik_host: authentik.blackiechan.net
+authentik_server_port: 9000

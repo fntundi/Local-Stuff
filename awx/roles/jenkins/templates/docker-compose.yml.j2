@@ -1,0 +1,40 @@
+services:
+  jenkins:
+    image: {{ jenkins_image_name }}:{{ jenkins_image_tag }}
+    container_name: jenkins
+    restart: unless-stopped
+    environment:
+      JENKINS_ADMIN_USER: ${JENKINS_ADMIN_USER}
+      JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD}
+      JENKINS_RUNNER_NAME: ${JENKINS_RUNNER_NAME}
+      JENKINS_RUNNER_LABEL: ${JENKINS_RUNNER_LABEL}
+      JENKINS_RUNNER_HOST: ${JENKINS_RUNNER_HOST}
+      JENKINS_RUNNER_SSH_PORT: ${JENKINS_RUNNER_SSH_PORT}
+      JENKINS_RUNNER_USER: ${JENKINS_RUNNER_USER}
+      JENKINS_RUNNER_REMOTE_FS: ${JENKINS_RUNNER_REMOTE_FS}
+      JENKINS_RUNNER_EXECUTORS: ${JENKINS_RUNNER_EXECUTORS}
+      JENKINS_RUNNER_PRIVATE_KEY_B64: ${JENKINS_RUNNER_PRIVATE_KEY_B64}
+      GIT_REPO_URL: ${GIT_REPO_URL}
+      GIT_USER: ${GIT_USER}
+      GIT_TOKEN: ${GIT_TOKEN}
+      SONARQUBE_TOKEN: ${SONARQUBE_TOKEN}
+      DOCKER_USER: ${DOCKER_USER}
+      DOCKER_PASSWORD: ${DOCKER_PASSWORD}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      SONARQUBE_URL: ${SONARQUBE_URL}
+      TRAEFIK_NETWORK: ${TRAEFIK_NETWORK}
+      CASC_JENKINS_CONFIG: ${CASC_JENKINS_CONFIG}
+    ports:
+      - "${JENKINS_HTTP_PORT}:8080"
+      - "${JENKINS_AGENT_PORT}:50000"
+    volumes:
+      - {{ jenkins_home_dir }}:/var/jenkins_home
+    networks:
+      - {{ jenkins_network }}
+
+networks:
+  {{ jenkins_network }}:
+    external: true

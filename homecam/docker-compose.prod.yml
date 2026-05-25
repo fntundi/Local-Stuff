@@ -1,0 +1,57 @@
+# Sentinel NOC - Production Docker Compose Configuration
+# =======================================================
+# This file extends docker-compose.yml for production deployments.
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+
+services:
+  # ===========================================================================
+  # MongoDB - Production Configuration
+  # ===========================================================================
+  mongodb:
+    restart: always
+    environment:
+      # Enable authentication in production
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-sentinel_admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?MONGO_PASSWORD is required}
+    # Don't expose port externally in production
+    ports: []
+    expose:
+      - "27017"
+
+  # ===========================================================================
+  # Backend - Production Configuration
+  # ===========================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: always
+    # Remove volume mounts in production
+    volumes:
+      - backend_uploads:/app/uploads
+    environment:
+      MONGO_URL: mongodb://${MONGO_USER:-sentinel_admin}:${MONGO_PASSWORD:?MONGO_PASSWORD is required}@mongodb:27017
+      DB_NAME: sentinel_noc
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://yourdomain.com}
+    # Override command for production (no reload)
+    command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "4"]
+
+  # ===========================================================================
+  # Frontend - Production Configuration (Nginx)
+  # ===========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL:?REACT_APP_BACKEND_URL is required}
+    restart: always
+    # Remove volume mounts in production
+    volumes: []
+    ports:
+      - "80:80"

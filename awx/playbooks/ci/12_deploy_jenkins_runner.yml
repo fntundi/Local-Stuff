@@ -1,0 +1,20 @@
+---
+- name: Deploy Jenkins runner
+  hosts: all
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Ensure platform repo is cloned
+      ansible.builtin.git:
+        repo: "{{ repo_clone_url }}"
+        dest: "{{ platform_repo_root }}"
+        version: "{{ repo_branch }}"
+        recursive: true
+        update: true
+        accept_hostkey: true
+      tags: [always]
+
+  roles:
+    - role: ../../roles/jenkins_runner
+      tags: [runner]

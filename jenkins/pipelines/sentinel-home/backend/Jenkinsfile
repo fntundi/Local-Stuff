@@ -1,0 +1,230 @@
+// ============================================================================
+// Sentinel-Home — Backend CI Pipeline  (Skeleton)
+// Artifacts → MinIO: {MINIO_BUCKET}/sentinel-home/backend/{BUILD_DATE}/{BUILD_NUMBER}/{type}/
+// ============================================================================
+
+@Library('home-platform') _
+
+def loadEnvFiles() {
+    ['jenkins/pipelines/global.env', 'jenkins/pipelines/sentinel-home/sentinel-home.env'].each { f ->
+        if (fileExists(f)) {
+            readFile(f).readLines().each { line ->
+                if (line && !line.startsWith('#') && line.contains('=')) {
+                    def parts = line.split('=', 2)
+                    if (parts.length == 2) env[parts[0].trim()] = parts[1].trim()
+                }
+            }
+        }
+    }
+}
+
+pipeline {
+
+    agent none
+
+    options {
+        ansiColor('xterm'); timestamps()
+        timeout(time: 45, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '50', daysToKeepStr: '30'))
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['dev','staging','prod'], description: 'Target environment')
+        booleanParam(name: 'SKIP_SONAR',  defaultValue: false, description: 'Skip SonarQube')
+        booleanParam(name: 'SKIP_ZAP',    defaultValue: false, description: 'Skip ZAP DAST')
+        booleanParam(name: 'SKIP_DEPLOY', defaultValue: true,  description: 'Skip image push')
+        string(name: 'DOCKER_TAG', defaultValue: '', description: 'Override image tag')
+    }
+
+    environment {
+        APP          = 'sentinel-home'
+        COMPONENT    = 'backend'
+        BUILD_IMAGE  = 'python:3.11-slim'   // TODO: update when stack is defined
+        BACKEND_DIR  = 'Sentinel-Home/backend'
+        IMAGE_NAME   = "${env.DOCKER_REGISTRY ?: 'localhost:5000'}/sentinel-home-backend"
+        SONAR_TOKEN  = credentials('sonarqube-token')
+        DOCKER_CREDS = credentials('docker-registry-creds')
+        MINIO_CREDS  = credentials('minio-credentials')
+        ARTIFACT_DIR = 'build-artifacts'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            agent { label 'docker' }
+            steps {
+                checkout scm
+                sh 'git submodule update --init --recursive'
+                script {
+                    loadEnvFiles()
+                    env.GIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    env.IMAGE_TAG = params.DOCKER_TAG ?: env.GIT_SHORT
+                    env.BUILD_DATE          = sh(returnStdout: true, script: 'date +%Y-%m-%d').trim()
+                    env.MINIO_REMOTE_PATH   = "sentinel-home/backend/${env.BUILD_DATE}/${env.BUILD_NUMBER}"
+                    env.MINIO_ENDPOINT_RESOLVED = env.MINIO_ENDPOINT ?: 'http://minio:9000'
+                    env.MINIO_BUCKET_RESOLVED   = env.MINIO_BUCKET   ?: 'ci-artifacts'
+                    sh "mkdir -p ${env.ARTIFACT_DIR}/{unit,smoke,functional,regression,zap,sonar}"
+                }
+            }
+        }
+
+        stage('Lint') {
+            agent { docker { image env.BUILD_IMAGE; reuseNode true } }
+            steps {
+                dir(env.BACKEND_DIR) {
+                    // TODO: add lint command
+                    sh "echo 'TODO: add lint commands' | tee ../${env.ARTIFACT_DIR}/lint-report.txt"
+                }
+            }
+        }
+
+        stage('Build') {
+            agent { docker { image env.BUILD_IMAGE; reuseNode true } }
+            steps {
+                dir(env.BACKEND_DIR) {
+                    echo "TODO: add build command"
+                }
+            }
+        }
+
+        stage('Unit Tests') {
+            agent { docker { image env.BUILD_IMAGE; reuseNode true } }
+            steps {
+                dir(env.BACKEND_DIR) {
+                    sh """
+                        # TODO: replace with actual test command
+                        echo "TODO: add unit tests" | tee ../${env.ARTIFACT_DIR}/unit/output.txt
+                        cat > ../${env.ARTIFACT_DIR}/unit/results.xml <<'EOF'
+<?xml version="1.0"?>
+<testsuite name="sentinel-home-backend" tests="0" failures="0" errors="0" skipped="0" time="0"/>
+EOF
+                    """
+                }
+            }
+            post {
+                always { junit allowEmptyResults: true, testResults: "${env.ARTIFACT_DIR}/unit/results.xml" }
+            }
+        }
+
+        stage('Integration Tests') {
+            agent { label 'docker' }
+            stages {
+                stage('Start Stack') {
+                    steps {
+                        sh "mkdir -p ${env.ARTIFACT_DIR}/{smoke,functional,regression}"
+                        echo "TODO: start Sentinel-Home backend stack"
+                        sh "echo 'SMOKE_STATUS=NOT_RUN' > ${env.ARTIFACT_DIR}/smoke/results.txt"
+                    }
+                }
+                stage('Smoke Tests') {
+                    steps {
+                        echo "TODO: add smoke tests for ${env.BACKEND_URL_DEV ?: 'sentinel-home-backend:8000'}"
+                    }
+                }
+                stage('Functional Tests') {
+                    steps {
+                        echo "TODO: add functional tests (mark with @pytest.mark.functional)"
+                    }
+                }
+                stage('Regression Tests') {
+                    steps {
+                        echo "TODO: add regression tests (mark with @pytest.mark.regression)"
+                    }
+                }
+                stage('Tear Down') {
+                    steps {
+                        sh "docker compose --project-name sentinel-be-test-${env.BUILD_NUMBER} down --volumes --remove-orphans || true"
+                    }
+                }
+            }
+            post {
+                always {
+                    stash name: "sentinel-be-int-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/**", allowEmpty: true
+                }
+            }
+        }
+
+        stage('SonarQube') {
+            when { not { expression { params.SKIP_SONAR } } }
+            agent { label 'docker' }
+            steps {
+                sh "mkdir -p ${env.ARTIFACT_DIR}/sonar"
+                sonarScan(
+                    projectKey:  env.SONAR_PROJECT_KEY_BACKEND ?: 'home-platform.sentinel-home.backend',
+                    projectName: 'Sentinel-Home Backend',
+                    sources:     env.BACKEND_DIR,
+                    language:    env.BACKEND_LANG ?: 'generic',
+                    exclusions:  '**/vendor/**,**/__pycache__/**',
+                    artifactDir: env.ARTIFACT_DIR,
+                )
+            }
+            post {
+                always {
+                    stash name: "sentinel-be-sonar-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/sonar/**", allowEmpty: true
+                }
+            }
+        }
+
+        stage('ZAP Scan') {
+            when { not { expression { params.SKIP_ZAP } } }
+            agent { label 'docker' }
+            steps {
+                sh "mkdir -p ${env.ARTIFACT_DIR}/zap"
+                // TODO: start backend before ZAP scan
+                zapScan(
+                    target:      env.BACKEND_URL_DEV ?: 'http://sentinel-home-backend:8000',
+                    mode:        env.ZAP_SCAN_MODE ?: 'baseline',
+                    reportName:  'sentinel-home-backend',
+                    network:     'host',
+                    artifactDir: env.ARTIFACT_DIR,
+                )
+            }
+            post {
+                always {
+                    stash name: "sentinel-be-zap-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/zap/**", allowEmpty: true
+                }
+            }
+        }
+
+    } // end stages
+
+    post {
+        always {
+            node('docker') {
+                checkout scm
+                sh "mkdir -p ${env.ARTIFACT_DIR}/{unit,smoke,functional,regression,zap,sonar}"
+                script {
+                    ["sentinel-be-int-${env.BUILD_NUMBER}",
+                     "sentinel-be-sonar-${env.BUILD_NUMBER}",
+                     "sentinel-be-zap-${env.BUILD_NUMBER}"].each { s ->
+                        try { unstash s } catch (e) { echo "Stash ${s} not available" }
+                    }
+                }
+                buildSummary(
+                    app: 'sentinel-home', component: 'backend',
+                    buildNumber: env.BUILD_NUMBER, buildResult: currentBuild.currentResult,
+                    buildUrl: env.BUILD_URL, artifactDir: env.ARTIFACT_DIR,
+                    minioEndpoint: env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                    minioBucket:   env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                    minioPath:     env.MINIO_REMOTE_PATH ?: "sentinel-home/backend/unknown/${env.BUILD_NUMBER}",
+                )
+                publishToMinio(
+                    app: 'sentinel-home', component: 'backend',
+                    buildDate: env.BUILD_DATE ?: sh(returnStdout: true, script: 'date +%Y-%m-%d').trim(),
+                    buildNumber: env.BUILD_NUMBER,
+                    endpoint: env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                    bucket:   env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                    localDir: env.ARTIFACT_DIR, credentialsId: 'minio-credentials',
+                )
+                cleanWs()
+            }
+        }
+        success { echo "Sentinel-Home backend CI passed" }
+        failure { echo "Sentinel-Home backend CI FAILED" }
+    }
+
+}

@@ -1,0 +1,23 @@
+---
+- name: Install Docker Engine
+  hosts: home_servers
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: ../../roles/docker
+      tags: [docker]
+
+  post_tasks:
+    - name: Verify Docker is running
+      ansible.builtin.command: docker info
+      become_user: "{{ platform_user }}"
+      register: docker_info
+      changed_when: false
+      tags: [verify]
+
+    - name: Print Docker version
+      ansible.builtin.debug:
+        msg: "Docker ready: {{ (docker_info.stdout | from_json).ServerVersion }}"
+      when: docker_info.rc == 0
+      tags: [verify]

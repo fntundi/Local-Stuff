@@ -1,0 +1,33 @@
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: sentinel-home
+servers: 1
+agents: 1
+network: home-net
+ports:
+  # Frontend ingress (ingress-nginx NodePort → Traefik host.docker.internal:31000)
+  - port: 31000:31000
+    nodeFilters:
+      - loadbalancer
+  # Backend API (direct NodePort → Traefik host.docker.internal:31001)
+  - port: 31001:31001
+    nodeFilters:
+      - loadbalancer
+  # HTTPS passthrough (optional)
+  - port: 31443:31443
+    nodeFilters:
+      - loadbalancer
+options:
+  k3d:
+    kubeAPI:
+      hostIP: "0.0.0.0"
+      hostPort: "6552"
+  k3s:
+    extraArgs:
+      - arg: "--disable=traefik"
+        nodeFilters:
+          - server:*
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true

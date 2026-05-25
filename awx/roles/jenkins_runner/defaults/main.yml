@@ -1,0 +1,11 @@
+---
+jenkins_runner_user: jenkins
+jenkins_runner_group: jenkins
+jenkins_runner_home: /home/jenkins
+jenkins_runner_agent_home: /home/jenkins/agent
+jenkins_runner_host: "{{ ansible_host | default('127.0.0.1') }}"
+jenkins_runner_ssh_port: 22
+jenkins_runner_label: docker
+jenkins_runner_executors: 2
+jenkins_runner_private_key: "{{ vault_jenkins_runner_ssh_private_key }}"
+jenkins_runner_public_key: ""

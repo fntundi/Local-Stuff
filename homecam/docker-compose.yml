@@ -1,0 +1,135 @@
+# Sentinel NOC - Docker Compose Configuration (Go Backend)
+# =========================================================
+# Full-stack deployment with Go backend, React frontend, and MongoDB
+
+services:
+  # ===========================================================================
+  # MongoDB Database
+  # ===========================================================================
+  mongodb:
+    image: mongo:6
+    container_name: sentinel-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    environment:
+      MONGO_INITDB_DATABASE: sentinel_noc
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - sentinel-network
+
+  # ===========================================================================
+  # Go Backend (Gin Framework)
+  # ===========================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel-backend
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      # Server
+      PORT: "8001"
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+
+      # Database
+      MONGO_URL: mongodb://mongodb:27017
+      DB_NAME: sentinel_noc
+
+      # Security — copy .env.example to .env and fill in real values before running
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY must be set in .env}
+
+      # Token settings
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+
+      # Rate limiting
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
+      RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW:-60}
+
+      # CORS
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:8001}
+
+      # MediaMTX
+      MEDIAMTX_URL: "http://mediamtx:9997"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - sentinel-network
+
+  # ===========================================================================
+  # MediaMTX (RTSP/HLS Media Server)
+  # ===========================================================================
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: sentinel-mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554"   # RTSP
+      - "8888:8888"   # HLS
+      - "9997:9997"   # API
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    networks:
+      - sentinel-network
+
+  # ===========================================================================
+  # React Frontend
+  # ===========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL:-http://localhost:8001}
+    container_name: sentinel-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - /app/node_modules
+    environment:
+      REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL:-http://localhost:8001}
+      CHOKIDAR_USEPOLLING: "true"
+      WDS_SOCKET_PORT: 3000
+    depends_on:
+      - backend
+    networks:
+      - sentinel-network
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  sentinel-network:
+    name: sentinel-network
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  mongodb_data:
+    name: sentinel-mongodb-data
+  mongodb_config:
+    name: sentinel-mongodb-config

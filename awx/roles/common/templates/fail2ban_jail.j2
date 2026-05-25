@@ -1,0 +1,9 @@
+# Managed by Ansible — do not edit manually
+[sshd]
+enabled  = true
+port     = {{ ssh_port }}
+filter   = sshd
+logpath  = /var/log/auth.log
+maxretry = 5
+bantime  = 3600
+findtime = 600

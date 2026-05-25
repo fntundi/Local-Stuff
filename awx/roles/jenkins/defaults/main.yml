@@ -1,0 +1,34 @@
+---
+jenkins_root: "{{ platform_home }}/jenkins"
+jenkins_workdir: "{{ jenkins_root }}/work"
+jenkins_project_name: jenkins
+jenkins_image_name: home-platform/jenkins-controller
+jenkins_image_tag: latest
+jenkins_http_port: 8080
+jenkins_agent_port: 50000
+jenkins_admin_user: admin
+jenkins_admin_password: "{{ vault_jenkins_admin_password }}"
+jenkins_git_user: "{{ vault_jenkins_git_user }}"
+jenkins_git_token: "{{ vault_jenkins_git_token }}"
+jenkins_sonarqube_token: "{{ vault_jenkins_sonarqube_token }}"
+jenkins_docker_user: "{{ vault_jenkins_docker_user }}"
+jenkins_docker_password: "{{ vault_jenkins_docker_password }}"
+jenkins_minio_access_key: "{{ vault_jenkins_minio_access_key }}"
+jenkins_minio_secret_key: "{{ vault_jenkins_minio_secret_key }}"
+jenkins_docker_registry: localhost:5000
+jenkins_minio_endpoint: http://minio:9000
+jenkins_minio_bucket: jenkins-artifacts
+jenkins_sonarqube_url: http://sonarqube-server:9000
+jenkins_traefik_network: home-net
+jenkins_runner_name: docker
+jenkins_runner_label: docker
+jenkins_runner_host: "{{ hostvars['jenkins-runner'].ansible_host | default('127.0.0.1') }}"
+jenkins_runner_ssh_port: 22
+jenkins_runner_user: jenkins
+jenkins_runner_remote_fs: /home/jenkins/agent
+jenkins_runner_executors: 2
+jenkins_runner_private_key: "{{ vault_jenkins_runner_ssh_private_key }}"
+jenkins_home_dir: "{{ platform_data_root }}/jenkins/home"
+jenkins_network: "jenkins-net"
+jenkins_subnet: "172.24.0.0/16"
+jenkins_source_casc_dir: "{{ platform_repo_root }}/jenkins/casc"

@@ -1,0 +1,19 @@
+---
+- name: Write AI Platform .env
+  ansible.builtin.template:
+    src: local_aistack.env.j2
+    dest: "{{ aistack_env_file }}"
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0600"
+  tags: [aistack, config]
+
+- name: Deploy via Docker Compose
+  ansible.builtin.include_tasks: compose.yml
+  when: aistack_deploy_strategy == 'compose'
+  tags: [aistack, deploy]
+
+- name: Deploy via k3d
+  ansible.builtin.include_tasks: k3d.yml
+  when: aistack_deploy_strategy == 'k8s'
+  tags: [aistack, deploy]

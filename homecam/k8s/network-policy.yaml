@@ -1,0 +1,89 @@
+---
+# Allow all traffic within the sentinel-noc namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace
+  namespace: sentinel-noc
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sentinel-noc
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sentinel-noc
+---
+# Traffic from Traefik (in ai-platform cluster) arrives via NodePort.
+# kube-proxy NATs the source IP, so namespace filtering is impossible — open by port only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-http-ingress
+  namespace: sentinel-noc
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [frontend, backend, mediamtx] }
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 80
+        - port: 8001
+        - port: 8888
+        - port: 9997
+---
+# Allow backend pods to reach external IPs (IP cameras on local network, ONVIF/RTSP)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-external-egress
+  namespace: sentinel-noc
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+  policyTypes:
+    - Egress
+  egress:
+    - {} # Allow all egress from backend (needed for ONVIF/RTSP camera access)
+---
+# Allow mediamtx pods to reach external IPs (pull RTSP streams from cameras)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mediamtx-external-egress
+  namespace: sentinel-noc
+spec:
+  podSelector:
+    matchLabels:
+      app: mediamtx
+  policyTypes:
+    - Egress
+  egress:
+    - {} # Allow all egress from mediamtx (needed for pulling RTSP streams from cameras)
+---
+# Allow DNS resolution for all pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: sentinel-noc
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

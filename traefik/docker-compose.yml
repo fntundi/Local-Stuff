@@ -1,0 +1,65 @@
+# =============================================================================
+# Traefik Gateway Stack
+# Start this FIRST — it creates the shared `home-net` network.
+#
+# Usage:
+#   docker compose --project-name traefik-gw --file traefik/docker-compose.yml up -d
+# =============================================================================
+
+networks:
+  home-net:
+    name: home-net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  letsencrypt:
+
+services:
+
+  traefik:
+    image: traefik:v3.1
+    container_name: traefik-gateway
+    restart: unless-stopped
+    networks:
+      - home-net
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8554:8554"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - letsencrypt:/letsencrypt
+    environment:
+      - TZ=${TZ:-America/New_York}
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.traefik-dashboard.rule: "Host(`traefik.blackiechan.net`)"
+      traefik.http.routers.traefik-dashboard.entrypoints: "websecure"
+      traefik.http.routers.traefik-dashboard.tls.certresolver: "letsencrypt"
+      traefik.http.routers.traefik-dashboard.service: "api@internal"
+      traefik.http.routers.traefik-dashboard.middlewares: "dashboard-auth,authentik@file"
+      # Generate with: htpasswd -nb admin yourpassword
+      traefik.http.middlewares.dashboard-auth.basicauth.users: "${TRAEFIK_DASHBOARD_USERS:-admin:$$apr1$$placeholder}"
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Remove in production — handy for verifying routing works
+  whoami:
+    image: traefik/whoami
+    container_name: whoami
+    restart: unless-stopped
+    networks:
+      - home-net
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.whoami.rule: "Host(`whoami.blackiechan.net`)"
+      traefik.http.routers.whoami.entrypoints: "websecure"
+      traefik.http.routers.whoami.tls.certresolver: "letsencrypt"

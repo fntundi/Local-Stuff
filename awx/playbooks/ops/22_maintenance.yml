@@ -1,0 +1,56 @@
+---
+- name: Platform Maintenance
+  hosts: home_servers
+  become: false
+  gather_facts: true
+
+  tasks:
+    - name: Prune stopped containers
+      community.docker.docker_prune:
+        containers: true
+        timeout: 60
+      tags: [docker]
+
+    - name: Prune unused images
+      community.docker.docker_prune:
+        images: true
+        images_filters:
+          dangling: false
+        timeout: 120
+      tags: [docker]
+
+    - name: Prune unused volumes (non-named)
+      community.docker.docker_prune:
+        volumes: true
+        timeout: 60
+      tags: [docker]
+
+    - name: Remove logs older than 7 days
+      ansible.builtin.find:
+        paths:
+          - "/var/log"
+          - "{{ platform_home }}/logs"
+        patterns: "*.log"
+        age: 7d
+        recurse: true
+      register: old_logs
+      ignore_errors: true
+      tags: [logs]
+
+    - name: Delete old log files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_logs.files | default([]) }}"
+      tags: [logs]
+
+    - name: Docker system disk usage
+      ansible.builtin.command: docker system df
+      register: docker_df
+      changed_when: false
+      tags: [docker]
+
+    - name: Maintenance summary
+      ansible.builtin.debug:
+        msg: "{{ docker_df.stdout_lines }}"
+      tags: [always]

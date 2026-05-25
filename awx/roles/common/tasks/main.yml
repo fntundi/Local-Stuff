@@ -1,0 +1,144 @@
+---
+- name: Update apt cache and upgrade packages
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    upgrade: safe
+  tags: [packages]
+
+- name: Install system packages
+  ansible.builtin.apt:
+    name: "{{ system_packages }}"
+    state: present
+  tags: [packages]
+
+- name: Set hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+  tags: [hostname]
+
+- name: Set timezone
+  community.general.timezone:
+    name: "{{ platform_timezone }}"
+  notify: Restart cron
+  tags: [timezone]
+
+- name: Set locale
+  community.general.locale_gen:
+    name: "{{ platform_locale }}"
+    state: present
+  tags: [locale]
+
+- name: Create platform group
+  ansible.builtin.group:
+    name: "{{ platform_group | default(platform_user) }}"
+    state: present
+  tags: [user]
+
+- name: Create platform user
+  ansible.builtin.user:
+    name: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    shell: /bin/bash
+    create_home: true
+    state: present
+  tags: [user]
+
+- name: Add platform user to sudo
+  ansible.builtin.user:
+    name: "{{ platform_user }}"
+    groups: sudo
+    append: true
+  tags: [user]
+
+- name: Set sysctl — vm.swappiness
+  ansible.posix.sysctl:
+    name: vm.swappiness
+    value: "{{ vm_swappiness }}"
+    state: present
+    sysctl_set: true
+    reload: true
+  tags: [sysctl]
+
+- name: Set sysctl — fs.file-max
+  ansible.posix.sysctl:
+    name: fs.file-max
+    value: "{{ fs_file_max }}"
+    state: present
+    sysctl_set: true
+    reload: true
+  tags: [sysctl]
+
+- name: Configure SSH daemon
+  ansible.builtin.template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config.d/99-hardening.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: sshd -t -f %s
+  notify: Restart SSH
+  tags: [ssh]
+
+- name: Configure UFW defaults
+  community.general.ufw:
+    state: enabled
+    policy: deny
+    direction: incoming
+  tags: [firewall]
+
+- name: UFW — allow SSH
+  community.general.ufw:
+    rule: allow
+    port: "{{ ssh_port }}"
+    proto: tcp
+  tags: [firewall]
+
+- name: UFW — allow HTTP
+  community.general.ufw:
+    rule: allow
+    port: "80"
+    proto: tcp
+  tags: [firewall]
+
+- name: UFW — allow HTTPS
+  community.general.ufw:
+    rule: allow
+    port: "443"
+    proto: tcp
+  tags: [firewall]
+
+- name: UFW — allow extra TCP ports
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ firewall_extra_tcp_ports }}"
+  tags: [firewall]
+
+- name: UFW — allow trusted networks
+  community.general.ufw:
+    rule: allow
+    src: "{{ item }}"
+  loop: "{{ trusted_networks }}"
+  tags: [firewall]
+
+- name: Configure fail2ban
+  ansible.builtin.template:
+    src: fail2ban_jail.j2
+    dest: /etc/fail2ban/jail.d/home-platform.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fail2ban
+  tags: [fail2ban]
+
+- name: Add /etc/hosts entries
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} HOME PLATFORM LOCAL DOMAINS"
+    block: |
+      {% for h in hosts_local %}
+      {{ h.ip }}  {{ h.name }}
+      {% endfor %}
+  tags: [hosts]

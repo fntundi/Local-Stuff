@@ -1,0 +1,155 @@
+---
+# Sentinel-Home maintenance playbook
+# Handles both compose and k8s (k3d) deployments.
+#
+# Tags:
+#   pull     — pull latest images / update cluster
+#   restart  — recreate containers / roll-restart deployments
+#   verify   — run health checks
+#   rollback — roll back the last k8s deployment
+#
+# Usage:
+#   ansible-playbook awx/playbooks/ops/26_manage_sentinel_home.yml \
+#     -e action=restart  -e awx_host=... -e awx_password=...
+- name: Manage Sentinel-Home
+  hosts: home_servers
+  become: false
+  gather_facts: true
+
+  vars:
+    kubeconfig_path: "{{ ansible_env.HOME }}/.kube/config-sentinel-home"
+
+  tasks:
+
+    # ── Docker Compose path ───────────────────────────────────────────────────
+    - name: Pull latest Sentinel-Home images (compose)
+      community.docker.docker_compose_v2_pull:
+        project_src: "{{ sentinel_compose_dir }}"
+        project_name: "{{ sentinel_project_name }}"
+      when: sentinel_deploy_strategy == 'compose'
+      tags: [sentinel, pull]
+
+    - name: Restart Sentinel-Home stack (compose)
+      community.docker.docker_compose_v2:
+        project_src: "{{ sentinel_compose_dir }}"
+        project_name: "{{ sentinel_project_name }}"
+        files:
+          - docker-compose.yml
+          - "{{ 'docker-compose.prod.yml' if platform_env == 'prod' else 'docker-compose.dev.yml' }}"
+        state: present
+        pull: never
+        recreate: always
+      become_user: "{{ platform_user }}"
+      when: sentinel_deploy_strategy == 'compose'
+      tags: [sentinel, restart]
+
+    # ── k8s (k3d) path ────────────────────────────────────────────────────────
+    - name: Roll-restart backend deployment (k8s)
+      ansible.builtin.command: >
+        kubectl rollout restart deployment/sentinel-home-backend
+        -n {{ sentinel_namespace }}
+        --kubeconfig {{ kubeconfig_path }}
+      become_user: "{{ platform_user }}"
+      when: sentinel_deploy_strategy == 'k8s'
+      changed_when: true
+      tags: [sentinel, restart]
+
+    - name: Roll-restart frontend deployment (k8s)
+      ansible.builtin.command: >
+        kubectl rollout restart deployment/sentinel-home-frontend
+        -n {{ sentinel_namespace }}
+        --kubeconfig {{ kubeconfig_path }}
+      become_user: "{{ platform_user }}"
+      when: sentinel_deploy_strategy == 'k8s'
+      changed_when: true
+      tags: [sentinel, restart]
+
+    - name: Wait for backend rollout (k8s)
+      ansible.builtin.command: >
+        kubectl rollout status deployment/sentinel-home-backend
+        -n {{ sentinel_namespace }} --timeout=5m
+        --kubeconfig {{ kubeconfig_path }}
+      become_user: "{{ platform_user }}"
+      when: sentinel_deploy_strategy == 'k8s'
+      changed_when: false
+      tags: [sentinel, restart, verify]
+
+    - name: Wait for frontend rollout (k8s)
+      ansible.builtin.command: >
+        kubectl rollout status deployment/sentinel-home-frontend
+        -n {{ sentinel_namespace }} --timeout=5m
+        --kubeconfig {{ kubeconfig_path }}
+      become_user: "{{ platform_user }}"
+      when: sentinel_deploy_strategy == 'k8s'
+      changed_when: false
+      tags: [sentinel, restart, verify]
+
+    - name: Rollback backend deployment (k8s)
+      ansible.builtin.command: >
+        kubectl rollout undo deployment/sentinel-home-backend
+        -n {{ sentinel_namespace }}
+        --kubeconfig {{ kubeconfig_path }}
+      become_user: "{{ platform_user }}"
+      when:
+        - sentinel_deploy_strategy == 'k8s'
+        - action | default('') == 'rollback'
+      changed_when: true
+      tags: [sentinel, rollback]
+
+    - name: Rollback frontend deployment (k8s)
+      ansible.builtin.command: >
+        kubectl rollout undo deployment/sentinel-home-frontend
+        -n {{ sentinel_namespace }}
+        --kubeconfig {{ kubeconfig_path }}
+      become_user: "{{ platform_user }}"
+      when:
+        - sentinel_deploy_strategy == 'k8s'
+        - action | default('') == 'rollback'
+      changed_when: true
+      tags: [sentinel, rollback]
+
+    # ── Health checks (both strategies) ──────────────────────────────────────
+    - name: Check Sentinel-Home frontend via Traefik
+      ansible.builtin.uri:
+        url: "https://{{ sentinel_hostname | default('sentinel.blackiechan.net') }}"
+        status_code: [200, 301, 302, 401, 403]
+        timeout: 15
+        validate_certs: false
+      register: sentinel_check
+      ignore_errors: true
+      tags: [sentinel, verify]
+
+    - name: Report health check result
+      ansible.builtin.debug:
+        msg: >-
+          Sentinel-Home frontend: {{ sentinel_check.status | default('UNREACHABLE') }}
+          ({{ sentinel_check.url | default('https://sentinel.blackiechan.net') }})
+      tags: [sentinel, verify]
+
+    - name: Check backend API NodePort directly
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ sentinel_k3d_backend_port | default(31001) }}/api/health"
+        status_code: [200, 404]
+        timeout: 10
+      register: sentinel_api_check
+      ignore_errors: true
+      when: sentinel_deploy_strategy == 'k8s'
+      tags: [sentinel, verify]
+
+    - name: Show pod status (k8s)
+      ansible.builtin.command: >
+        kubectl get pods -n {{ sentinel_namespace }} -o wide
+        --kubeconfig {{ kubeconfig_path }}
+      become_user: "{{ platform_user }}"
+      register: pod_status
+      changed_when: false
+      when: sentinel_deploy_strategy == 'k8s'
+      tags: [sentinel, verify]
+
+    - name: Display pod status
+      ansible.builtin.debug:
+        msg: "{{ pod_status.stdout_lines }}"
+      when:
+        - sentinel_deploy_strategy == 'k8s'
+        - pod_status is defined
+      tags: [sentinel, verify]

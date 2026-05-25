@@ -1,0 +1,186 @@
+// ============================================================================
+// HomeCam — Deploy Pipeline
+// Kubernetes via k3d (sentinel-noc namespace)
+//
+// Stages:
+//   Input Gate (prod) → Pre-flight → Update Manifests → Apply → Verify → Notify
+// ============================================================================
+
+@Library('home-platform') _
+
+pipeline {
+
+    agent { label 'docker' }
+
+    options {
+        ansiColor('xterm')
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'staging', 'prod'],
+            description: 'Target deploy environment'
+        )
+        string(
+            name: 'DOCKER_TAG',
+            defaultValue: 'latest',
+            description: 'Image tag to deploy (must exist in registry)'
+        )
+        booleanParam(
+            name: 'FORCE_DEPLOY',
+            defaultValue: false,
+            description: 'Skip approval gate (only valid for dev/staging)'
+        )
+        booleanParam(
+            name: 'RUN_POST_DEPLOY_SMOKE',
+            defaultValue: true,
+            description: 'Run smoke tests after deploy'
+        )
+    }
+
+    environment {
+        APP          = 'homecam'
+        NAMESPACE    = 'sentinel-noc'
+        K8S_DIR      = 'k8s'
+        IMAGE_TAG    = "${params.DOCKER_TAG}"
+        SONAR_TOKEN  = credentials('sonarqube-token')
+        KUBE_CONFIG  = credentials('kubeconfig-homecam')
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    def globalEnv = readFile('jenkins/pipelines/global.env')
+                    def appEnv    = readFile('jenkins/pipelines/homecam/homecam.env')
+                    [globalEnv, appEnv].each { block ->
+                        block.readLines().each { line ->
+                            if (line && !line.startsWith('#') && line.contains('=')) {
+                                def (k, v) = line.split('=', 2)
+                                env[k.trim()] = v.trim()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Approval Gate') {
+            when {
+                allOf {
+                    expression { params.ENVIRONMENT == 'prod' }
+                    not { expression { params.FORCE_DEPLOY } }
+                }
+            }
+            steps {
+                input(
+                    message: "Deploy HomeCam tag '${env.IMAGE_TAG}' to PRODUCTION?",
+                    ok: 'Deploy',
+                    submitter: 'admin,deploy-approvers',
+                    parameters: [
+                        booleanParam(name: 'CONFIRMED', defaultValue: false,
+                            description: 'I have verified the image in staging'),
+                    ]
+                )
+            }
+        }
+
+        stage('Pre-flight Checks') {
+            steps {
+                withEnv(["KUBECONFIG=${env.KUBE_CONFIG}"]) {
+                    sh """
+                        kubectl config current-context
+                        kubectl get nodes -o wide
+                        kubectl get pods -n ${env.NAMESPACE} -o wide || true
+
+                        # Confirm images exist in registry
+                        docker manifest inspect ${env.DOCKER_REGISTRY}/homecam-backend:${env.IMAGE_TAG} 2>&1
+                        docker manifest inspect ${env.DOCKER_REGISTRY}/homecam-frontend:${env.IMAGE_TAG} 2>&1
+                    """
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                withEnv(["KUBECONFIG=${env.KUBE_CONFIG}"]) {
+                    sh """
+                        # Patch image tags in-place
+                        kubectl set image deployment/backend \\
+                            backend=${env.DOCKER_REGISTRY}/homecam-backend:${env.IMAGE_TAG} \\
+                            -n ${env.NAMESPACE}
+
+                        kubectl set image deployment/frontend \\
+                            frontend=${env.DOCKER_REGISTRY}/homecam-frontend:${env.IMAGE_TAG} \\
+                            -n ${env.NAMESPACE}
+
+                        # Apply any manifest changes
+                        kubectl apply -f ${env.K8S_DIR}/ -n ${env.NAMESPACE}
+
+                        # Wait for rollout
+                        kubectl rollout status deployment/backend  -n ${env.NAMESPACE} --timeout=5m
+                        kubectl rollout status deployment/frontend -n ${env.NAMESPACE} --timeout=5m
+                    """
+                }
+            }
+        }
+
+        stage('Post-Deploy Smoke Tests') {
+            when { expression { params.RUN_POST_DEPLOY_SMOKE } }
+            steps {
+                script {
+                    def url = params.ENVIRONMENT == 'prod' ? env.FRONTEND_URL_PROD : env.FRONTEND_URL_DEV
+                    sh """
+                        # Wait for services to stabilise
+                        sleep 10
+
+                        curl -sf ${url}/ -o /dev/null && echo 'Frontend: OK'
+                        curl -sf ${url}/api/health  && echo 'Backend health: OK'
+                    """
+                }
+            }
+        }
+
+        stage('Tag Git') {
+            when { expression { params.ENVIRONMENT == 'prod' } }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'git-credentials',
+                        usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
+                    sh """
+                        git tag -a "deploy-prod-${env.IMAGE_TAG}" \\
+                            -m "Production deploy: ${env.IMAGE_TAG} by ${currentBuild.getBuildCauses()[0]?.userId ?: 'jenkins'}"
+                        git push https://\${GIT_USER}:\${GIT_TOKEN}@\$(git remote get-url origin | sed 's|https://||') \\
+                            "deploy-prod-${env.IMAGE_TAG}"
+                    """
+                }
+            }
+        }
+
+    } // end stages
+
+    post {
+        success {
+            echo "HomeCam deployed to ${params.ENVIRONMENT} — tag: ${env.IMAGE_TAG}"
+        }
+        failure {
+            withEnv(["KUBECONFIG=${env.KUBE_CONFIG}"]) {
+                sh """
+                    echo '=== ROLLBACK: reverting to previous revision ==='
+                    kubectl rollout undo deployment/backend  -n ${env.NAMESPACE} || true
+                    kubectl rollout undo deployment/frontend -n ${env.NAMESPACE} || true
+                """
+            }
+        }
+        always {
+            cleanWs()
+        }
+    }
+
+}

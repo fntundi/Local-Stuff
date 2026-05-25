@@ -1,0 +1,23 @@
+---
+- name: Generate HomeCam secrets
+  ansible.builtin.include_tasks: secrets.yml
+  tags: [homecam, secrets]
+
+- name: Write HomeCam .env
+  ansible.builtin.template:
+    src: homecam.env.j2
+    dest: "{{ homecam_compose_dir }}/.env"
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0600"
+  tags: [homecam, config]
+
+- name: Deploy via Docker Compose
+  ansible.builtin.include_tasks: compose.yml
+  when: homecam_deploy_strategy == 'compose'
+  tags: [homecam, deploy]
+
+- name: Deploy via k3d
+  ansible.builtin.include_tasks: k3d.yml
+  when: homecam_deploy_strategy == 'k8s'
+  tags: [homecam, deploy]

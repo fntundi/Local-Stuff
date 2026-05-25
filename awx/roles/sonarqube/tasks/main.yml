@@ -1,0 +1,76 @@
+---
+- name: Create SonarQube workdir
+  ansible.builtin.file:
+    path: "{{ sonarqube_workdir }}"
+    state: directory
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0755"
+
+- name: Ensure SonarQube data directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "0755"
+  loop:
+    - { path: "{{ sonarqube_db_dir }}", owner: "999", group: "999" }
+    - { path: "{{ sonarqube_data_dir }}", owner: "1000", group: "1000" }
+    - { path: "{{ sonarqube_extensions_dir }}", owner: "1000", group: "1000" }
+    - { path: "{{ sonarqube_logs_dir }}", owner: "1000", group: "1000" }
+
+- name: Tune host for SonarQube Elasticsearch
+  ansible.posix.sysctl:
+    name: vm.max_map_count
+    value: "{{ sonarqube_vm_max_map_count }}"
+    state: present
+    sysctl_set: true
+    reload: true
+  become: true
+  tags: [sysctl]
+
+- name: Write SonarQube env file
+  ansible.builtin.template:
+    src: sonarqube.env.j2
+    dest: "{{ sonarqube_workdir }}/.env"
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0600"
+
+- name: Write SonarQube compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ sonarqube_workdir }}/docker-compose.yml"
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0644"
+
+- name: Create SonarQube network
+  community.docker.docker_network:
+    name: "{{ sonarqube_network }}"
+    driver: bridge
+    ipam_config:
+      - subnet: "{{ sonarqube_subnet }}"
+    state: present
+
+- name: Start SonarQube stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ sonarqube_workdir }}"
+    project_name: "{{ sonarqube_project_name }}"
+    files:
+      - docker-compose.yml
+    state: present
+    pull: missing
+  become_user: "{{ platform_user }}"
+
+- name: Wait for SonarQube to become healthy
+  ansible.builtin.uri:
+    url: "http://localhost:{{ sonarqube_http_port }}/api/system/status"
+    return_content: true
+    status_code: 200
+    timeout: 10
+  register: sonarqube_status
+  retries: 30
+  delay: 10
+  until: sonarqube_status.json.status is defined and sonarqube_status.json.status in ['UP', 'DB_MIGRATION_NEEDED', 'DB_MIGRATION_RUNNING']

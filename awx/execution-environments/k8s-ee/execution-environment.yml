@@ -1,0 +1,31 @@
+---
+version: 3
+
+build_arg_defaults:
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: "--pre"
+
+images:
+  base_image:
+    name: ghcr.io/ansible/awx-ee:latest
+
+dependencies:
+  ansible_core:
+    package_pip: ansible-core>=2.15,<2.17
+  ansible_runner:
+    package_pip: ansible-runner
+  galaxy: requirements.yml
+  python: requirements.txt
+  system: bindep.txt
+
+additional_build_steps:
+  prepend_galaxy:
+    - ADD _build/configs/ansible.cfg /home/runner/.ansible.cfg
+  append_final:
+    # kubectl
+    - RUN curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+        && chmod +x kubectl && mv kubectl /usr/local/bin/
+    # k3d
+    - RUN curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+    # helm
+    - RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    - RUN echo "k8s-ee ready"

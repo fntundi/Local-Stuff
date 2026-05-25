@@ -1,0 +1,30 @@
+---
+- name: Create sentinel-network
+  community.docker.docker_network:
+    name: "{{ homecam_network }}"
+    driver: bridge
+    ipam_config:
+      - subnet: "{{ homecam_subnet }}"
+    state: present
+
+- name: Start HomeCam stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ homecam_compose_dir }}"
+    project_name: "{{ homecam_project_name }}"
+    files:
+      - docker-compose.yml
+      - "{{ 'docker-compose.prod.yml' if platform_env == 'prod' else 'docker-compose.dev.yml' }}"
+    state: present
+    pull: missing
+  become_user: "{{ platform_user }}"
+  register: homecam_compose_result
+
+- name: Wait for HomeCam backend health
+  ansible.builtin.uri:
+    url: "http://localhost:{{ port_homecam_backend }}/api/health"
+    timeout: 5
+  retries: 18
+  delay: 10
+  until: homecam_health.status == 200
+  register: homecam_health
+  ignore_errors: true

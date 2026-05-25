@@ -1,0 +1,349 @@
+// ============================================================================
+// HomeCam — Backend CI Pipeline
+// Go 1.21 · Gin · MongoDB Motor
+//
+// Stages:
+//   Checkout → Lint/Vet → Build → Unit Tests → Smoke →
+//   Functional → Regression → SonarQube → ZAP → Push
+//
+// Artifacts uploaded to MinIO:
+//   {MINIO_BUCKET}/homecam/backend/{BUILD_DATE}/{BUILD_NUMBER}/{type}/
+// ============================================================================
+
+@Library('home-platform') _
+
+def loadEnvFiles() {
+    ['jenkins/pipelines/global.env', 'jenkins/pipelines/homecam/homecam.env'].each { f ->
+        if (fileExists(f)) {
+            readFile(f).readLines().each { line ->
+                if (line && !line.startsWith('#') && line.contains('=')) {
+                    def parts = line.split('=', 2)
+                    if (parts.length == 2) env[parts[0].trim()] = parts[1].trim()
+                }
+            }
+        }
+    }
+}
+
+pipeline {
+
+    agent none
+
+    options {
+        ansiColor('xterm')
+        timestamps()
+        timeout(time: 45, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '50', daysToKeepStr: '30'))
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['dev','staging','prod'],
+               description: 'Target environment')
+        booleanParam(name: 'SKIP_SONAR',  defaultValue: false, description: 'Skip SonarQube')
+        booleanParam(name: 'SKIP_ZAP',    defaultValue: false, description: 'Skip ZAP DAST')
+        booleanParam(name: 'SKIP_DEPLOY', defaultValue: true,  description: 'Skip image push')
+        string(name: 'DOCKER_TAG', defaultValue: '', description: 'Override image tag')
+    }
+
+    environment {
+        APP          = 'homecam'
+        COMPONENT    = 'backend'
+        GO_IMAGE     = 'golang:1.21-alpine'
+        BACKEND_DIR  = 'homecam/backend'
+        IMAGE_NAME   = "${env.DOCKER_REGISTRY ?: 'localhost:5000'}/homecam-backend"
+        SONAR_TOKEN  = credentials('sonarqube-token')
+        DOCKER_CREDS = credentials('docker-registry-creds')
+        MINIO_CREDS  = credentials('minio-credentials')
+        ARTIFACT_DIR = 'build-artifacts'
+        CGO_ENABLED  = '0'
+        GOFLAGS      = '-mod=mod'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            agent { label 'docker' }
+            steps {
+                checkout scm
+                sh 'git submodule update --init --recursive'
+                script {
+                    loadEnvFiles()
+                    env.GIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    env.IMAGE_TAG = params.DOCKER_TAG ?: env.GIT_SHORT
+                    env.BUILD_DATE = sh(returnStdout: true, script: 'date +%Y-%m-%d').trim()
+                    env.MINIO_REMOTE_PATH     = "homecam/backend/${env.BUILD_DATE}/${env.BUILD_NUMBER}"
+                    env.MINIO_ENDPOINT_RESOLVED = env.MINIO_ENDPOINT ?: 'http://minio:9000'
+                    env.MINIO_BUCKET_RESOLVED   = env.MINIO_BUCKET   ?: 'ci-artifacts'
+                    sh "mkdir -p ${env.ARTIFACT_DIR}/{unit,smoke,functional,regression,zap,sonar}"
+                    echo "MinIO path: ${env.MINIO_BUCKET_RESOLVED}/${env.MINIO_REMOTE_PATH}"
+                }
+            }
+        }
+
+        stage('Lint & Vet') {
+            agent { docker { image env.GO_IMAGE; args '-v go-mod-cache:/root/go/pkg/mod'; reuseNode true } }
+            steps {
+                dir(env.BACKEND_DIR) {
+                    sh """
+                        go mod tidy
+                        go vet ./... 2>&1 | tee ../${env.ARTIFACT_DIR}/lint-report.txt
+                        go install honnef.co/go/tools/cmd/staticcheck@latest 2>/dev/null || true
+                        staticcheck ./... 2>&1 | tee ../${env.ARTIFACT_DIR}/staticcheck-report.txt || true
+                    """
+                }
+            }
+            post {
+                always { archiveArtifacts artifacts: "${env.ARTIFACT_DIR}/*-report.txt", allowEmptyArchive: true }
+            }
+        }
+
+        stage('Build') {
+            parallel {
+                stage('Compile') {
+                    agent { docker { image env.GO_IMAGE; args '-v go-mod-cache:/root/go/pkg/mod'; reuseNode true } }
+                    steps {
+                        dir(env.BACKEND_DIR) { sh 'go build -v ./cmd/api/...' }
+                    }
+                }
+                stage('Docker Image') {
+                    agent { label 'docker' }
+                    steps {
+                        sh """
+                            docker build \\
+                                --build-arg BUILDKIT_INLINE_CACHE=1 \\
+                                --cache-from ${env.IMAGE_NAME}:latest \\
+                                --tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} \\
+                                --tag ${env.IMAGE_NAME}:latest \\
+                                ${env.BACKEND_DIR}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Unit Tests') {
+            agent { docker { image env.GO_IMAGE; args '-v go-mod-cache:/root/go/pkg/mod'; reuseNode true } }
+            steps {
+                dir(env.BACKEND_DIR) {
+                    sh """
+                        go test ./... \\
+                            -v -race \\
+                            -coverprofile=coverage.out \\
+                            -covermode=atomic \\
+                            2>&1 | tee unit-output.txt
+
+                        go tool cover -func=coverage.out | tee coverage-summary.txt
+
+                        go install github.com/jstemmer/go-junit-report/v2@latest 2>/dev/null || true
+                        go-junit-report -set-exit-code < unit-output.txt > unit-tests.xml 2>/dev/null || true
+                    """
+                }
+                sh """
+                    cp ${env.BACKEND_DIR}/unit-tests.xml   ${env.ARTIFACT_DIR}/unit/results.xml 2>/dev/null || true
+                    cp ${env.BACKEND_DIR}/coverage.out      ${env.ARTIFACT_DIR}/unit/             2>/dev/null || true
+                    cp ${env.BACKEND_DIR}/coverage-summary.txt ${env.ARTIFACT_DIR}/unit/         2>/dev/null || true
+                    cp ${env.BACKEND_DIR}/unit-output.txt   ${env.ARTIFACT_DIR}/unit/             2>/dev/null || true
+                """
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: "${env.BACKEND_DIR}/unit-tests.xml"
+                    archiveArtifacts artifacts: "${env.ARTIFACT_DIR}/unit/**", allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Integration Tests') {
+            agent { label 'docker' }
+            stages {
+
+                stage('Start Test Stack') {
+                    steps {
+                        sh """
+                            mkdir -p ${env.ARTIFACT_DIR}/{smoke,functional,regression}
+                            docker compose \\
+                                --project-name homecam-be-test-${env.BUILD_NUMBER} \\
+                                --file docker-compose.yml \\
+                                up -d --build --wait mongodb backend
+                        """
+                        sh 'sleep 5'
+                    }
+                }
+
+                stage('Smoke Tests') {
+                    steps {
+                        sh """
+                            SMOKE_STATUS=FAIL
+                            curl -sf http://localhost:8001/api/health > /dev/null && SMOKE_STATUS=PASS
+                            echo "SMOKE_STATUS=\${SMOKE_STATUS}" | tee ${env.ARTIFACT_DIR}/smoke/results.txt
+                            [ "\${SMOKE_STATUS}" = "PASS" ]
+                        """
+                    }
+                    post {
+                        always { archiveArtifacts artifacts: "${env.ARTIFACT_DIR}/smoke/*", allowEmptyArchive: true }
+                    }
+                }
+
+                stage('Functional Tests') {
+                    agent { docker { image 'python:3.11-slim'; args '--network host'; reuseNode true } }
+                    steps {
+                        sh """
+                            pip install pytest requests --quiet
+                            pytest tests/ -v -m functional \\
+                                --tb=short \\
+                                --junitxml=${env.ARTIFACT_DIR}/functional/results.xml \\
+                                2>&1 | tee ${env.ARTIFACT_DIR}/functional/output.txt || true
+                        """
+                    }
+                    post {
+                        always { junit allowEmptyResults: true, testResults: "${env.ARTIFACT_DIR}/functional/results.xml" }
+                    }
+                }
+
+                stage('Regression Tests') {
+                    agent { docker { image 'python:3.11-slim'; args '--network host'; reuseNode true } }
+                    steps {
+                        sh """
+                            pip install pytest requests --quiet
+                            pytest tests/ -v -m regression \\
+                                --tb=short \\
+                                --junitxml=${env.ARTIFACT_DIR}/regression/results.xml \\
+                                2>&1 | tee ${env.ARTIFACT_DIR}/regression/output.txt || true
+                        """
+                    }
+                    post {
+                        always { junit allowEmptyResults: true, testResults: "${env.ARTIFACT_DIR}/regression/results.xml" }
+                    }
+                }
+
+                stage('Tear Down') {
+                    steps {
+                        sh "docker compose --project-name homecam-be-test-${env.BUILD_NUMBER} down --volumes --remove-orphans || true"
+                    }
+                }
+
+            }
+            post {
+                always {
+                    stash name: "homecam-be-int-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/**",
+                          allowEmpty: true
+                }
+            }
+        }
+
+        stage('SonarQube') {
+            when { not { expression { params.SKIP_SONAR } } }
+            agent { label 'docker' }
+            steps {
+                sh "mkdir -p ${env.ARTIFACT_DIR}/sonar"
+                sonarScan(
+                    projectKey:     env.SONAR_PROJECT_KEY_BACKEND ?: 'home-platform.homecam.backend',
+                    projectName:    'HomeCam Backend',
+                    sources:        env.BACKEND_DIR,
+                    language:       'go',
+                    coverageReport: "${env.BACKEND_DIR}/coverage.out",
+                    exclusions:     '**/vendor/**,**/*_test.go',
+                    artifactDir:    env.ARTIFACT_DIR,
+                )
+            }
+            post {
+                always {
+                    stash name: "homecam-be-sonar-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/sonar/**",
+                          allowEmpty: true
+                }
+            }
+        }
+
+        stage('ZAP Scan') {
+            when { not { expression { params.SKIP_ZAP } } }
+            agent { label 'docker' }
+            steps {
+                sh """
+                    mkdir -p ${env.ARTIFACT_DIR}/zap
+                    docker compose --project-name homecam-be-zap-${env.BUILD_NUMBER} \\
+                        --file docker-compose.yml up -d --wait mongodb backend
+                """
+                script {
+                    try {
+                        zapScan(
+                            target:      'http://localhost:8001/api',
+                            mode:        env.ZAP_SCAN_MODE ?: 'baseline',
+                            reportName:  'homecam-backend',
+                            network:     'host',
+                            artifactDir: env.ARTIFACT_DIR,
+                        )
+                    } finally {
+                        sh "docker compose --project-name homecam-be-zap-${env.BUILD_NUMBER} down --volumes || true"
+                    }
+                }
+            }
+            post {
+                always {
+                    stash name: "homecam-be-zap-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/zap/**",
+                          allowEmpty: true
+                }
+            }
+        }
+
+        stage('Push Image') {
+            when { not { expression { params.SKIP_DEPLOY } } }
+            agent { label 'docker' }
+            steps {
+                sh """
+                    echo \${DOCKER_CREDS_PSW} | docker login ${env.DOCKER_REGISTRY} \\
+                        -u \${DOCKER_CREDS_USR} --password-stdin
+                    docker push ${env.IMAGE_NAME}:${env.IMAGE_TAG}
+                    docker push ${env.IMAGE_NAME}:latest
+                """
+            }
+        }
+
+    } // end stages
+
+    post {
+        always {
+            node('docker') {
+                checkout scm
+                sh "mkdir -p ${env.ARTIFACT_DIR}/{unit,smoke,functional,regression,zap,sonar}"
+
+                script {
+                    ["homecam-be-int-${env.BUILD_NUMBER}",
+                     "homecam-be-sonar-${env.BUILD_NUMBER}",
+                     "homecam-be-zap-${env.BUILD_NUMBER}"].each { stashName ->
+                        try { unstash stashName } catch (e) { echo "Stash ${stashName} not available" }
+                    }
+                }
+
+                buildSummary(
+                    app: 'homecam', component: 'backend',
+                    buildNumber: env.BUILD_NUMBER,
+                    buildResult: currentBuild.currentResult,
+                    buildUrl:    env.BUILD_URL,
+                    artifactDir: env.ARTIFACT_DIR,
+                    minioEndpoint: env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                    minioBucket:   env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                    minioPath:     env.MINIO_REMOTE_PATH ?: "homecam/backend/unknown/${env.BUILD_NUMBER}",
+                )
+
+                publishToMinio(
+                    app: 'homecam', component: 'backend',
+                    buildDate:   env.BUILD_DATE ?: sh(returnStdout: true, script: 'date +%Y-%m-%d').trim(),
+                    buildNumber: env.BUILD_NUMBER,
+                    endpoint:    env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                    bucket:      env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                    localDir:    env.ARTIFACT_DIR,
+                    credentialsId: 'minio-credentials',
+                )
+
+                cleanWs()
+            }
+        }
+        success { echo "HomeCam backend CI passed — ${env.IMAGE_NAME}:${env.IMAGE_TAG}" }
+        failure { echo "HomeCam backend CI FAILED" }
+    }
+
+}

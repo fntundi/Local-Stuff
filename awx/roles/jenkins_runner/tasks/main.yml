@@ -1,0 +1,122 @@
+---
+- name: Install Jenkins runner packages
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - openjdk-17-jre-headless
+      - openssh-server
+      - git
+    state: present
+    update_cache: true
+  tags: [runner, packages]
+
+- name: Add Docker GPG key
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+  tags: [runner, docker]
+
+- name: Add Docker GPG key
+  ansible.builtin.apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    keyring: /etc/apt/keyrings/docker.gpg
+    state: present
+  tags: [runner, docker]
+
+- name: Add Docker apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg]
+      https://download.docker.com/linux/ubuntu
+      {{ ansible_distribution_release }} stable
+    filename: docker
+    state: present
+  tags: [runner, docker]
+
+- name: Install Docker Engine packages
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+  tags: [runner, docker]
+
+- name: Start and enable Docker
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+  tags: [runner, docker]
+
+- name: Create Jenkins runner group
+  ansible.builtin.group:
+    name: "{{ jenkins_runner_group }}"
+    state: present
+  tags: [runner, user]
+
+- name: Create Jenkins runner user
+  ansible.builtin.user:
+    name: "{{ jenkins_runner_user }}"
+    group: "{{ jenkins_runner_group }}"
+    shell: /bin/bash
+    create_home: true
+    state: present
+  tags: [runner, user]
+
+- name: Add Jenkins runner user to docker group
+  ansible.builtin.user:
+    name: "{{ jenkins_runner_user }}"
+    groups: docker
+    append: true
+  tags: [runner, user]
+
+- name: Create runner directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ jenkins_runner_user }}"
+    group: "{{ jenkins_runner_group }}"
+    mode: "0755"
+  loop:
+    - "{{ jenkins_runner_home }}"
+    - "{{ jenkins_runner_agent_home }}"
+    - "{{ jenkins_runner_home }}/.ssh"
+  tags: [runner, dirs]
+
+- name: Derive runner public key
+  ansible.builtin.shell: "ssh-keygen -y -f /dev/stdin"
+  args:
+    stdin: "{{ jenkins_runner_private_key }}"
+  register: runner_public_key
+  changed_when: false
+  no_log: true
+  tags: [runner, ssh]
+
+- name: Install runner authorized key
+  ansible.posix.authorized_key:
+    user: "{{ jenkins_runner_user }}"
+    key: "{{ runner_public_key.stdout }}"
+    state: present
+  tags: [runner, ssh]
+
+- name: Configure SSH daemon for Jenkins runner
+  ansible.builtin.service:
+    name: ssh
+    state: started
+    enabled: true
+  tags: [runner, ssh]
+
+- name: Write runner host summary
+  ansible.builtin.debug:
+    msg: >-
+      Jenkins runner {{ inventory_hostname }} is ready at {{ jenkins_runner_host }}:{{ jenkins_runner_ssh_port }}
+      with label {{ jenkins_runner_label }} and {{ jenkins_runner_executors }} executors.
+  tags: [runner, always]

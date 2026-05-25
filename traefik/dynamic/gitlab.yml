@@ -1,0 +1,33 @@
+# Traefik Dynamic Config — GitLab CE
+# GitLab runs on its own host (192.168.4.14), proxied via nginx on port 80.
+# Traefik provides TLS termination; the backend is plain HTTP to the GitLab host.
+
+http:
+  routers:
+    gitlab:
+      rule: "Host(`gitlab.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: gitlab-svc
+      middlewares: [gitlab-security-headers]
+
+    # GitLab SSH clone passthrough via a separate TCP entryPoint (add :2222 to traefik.yml if needed)
+
+  services:
+    gitlab-svc:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.4.14:80"   # nginx reverse-proxy on GitLab host
+        passHostHeader: true
+
+  middlewares:
+    gitlab-security-headers:
+      headers:
+        stsSeconds: 31536000
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-App: "GitLab"
+          X-Powered-By: ""

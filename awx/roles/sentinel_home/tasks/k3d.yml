@@ -1,0 +1,80 @@
+---
+- name: Check if Sentinel-Home k3d cluster exists
+  ansible.builtin.command: k3d cluster list -o json
+  register: k3d_list
+  changed_when: false
+
+- name: Create Sentinel-Home k3d cluster
+  ansible.builtin.command: k3d cluster create --config {{ sentinel_k3d_config }}
+  when: sentinel_k3d_cluster not in (k3d_list.stdout | from_json | map(attribute='name') | list)
+  become_user: "{{ platform_user }}"
+
+- name: Retrieve kubeconfig for Sentinel-Home cluster
+  ansible.builtin.command: k3d kubeconfig get {{ sentinel_k3d_cluster }}
+  register: sentinel_kubeconfig
+  changed_when: false
+  become_user: "{{ platform_user }}"
+
+- name: Write kubeconfig to well-known path
+  ansible.builtin.copy:
+    content: "{{ sentinel_kubeconfig.stdout }}"
+    dest: "{{ ansible_env.HOME }}/.kube/config-sentinel-home"
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0600"
+
+- name: Apply namespace
+  kubernetes.core.k8s:
+    src: "{{ sentinel_k8s_dir }}/namespace.yaml"
+    kubeconfig: "{{ ansible_env.HOME }}/.kube/config-sentinel-home"
+    state: present
+  become_user: "{{ platform_user }}"
+
+- name: Apply ConfigMap
+  kubernetes.core.k8s:
+    src: "{{ sentinel_k8s_dir }}/configmap.yaml"
+    kubeconfig: "{{ ansible_env.HOME }}/.kube/config-sentinel-home"
+    namespace: "{{ sentinel_namespace }}"
+    state: present
+  become_user: "{{ platform_user }}"
+
+- name: Apply NetworkPolicies
+  kubernetes.core.k8s:
+    src: "{{ sentinel_k8s_dir }}/network-policy.yaml"
+    kubeconfig: "{{ ansible_env.HOME }}/.kube/config-sentinel-home"
+    namespace: "{{ sentinel_namespace }}"
+    state: present
+  become_user: "{{ platform_user }}"
+
+- name: Apply remaining manifests
+  kubernetes.core.k8s:
+    src: "{{ sentinel_k8s_dir }}/{{ item }}"
+    kubeconfig: "{{ ansible_env.HOME }}/.kube/config-sentinel-home"
+    namespace: "{{ sentinel_namespace }}"
+    state: present
+  loop:
+    - deployment-backend.yaml
+    - deployment-frontend.yaml
+    - service-backend.yaml
+    - service-frontend.yaml
+    - ingress.yaml
+  ignore_errors: true   # tolerate missing files until submodule is populated
+  become_user: "{{ platform_user }}"
+
+- name: Wait for backend rollout
+  ansible.builtin.command: >
+    kubectl rollout status deployment/sentinel-home-backend
+    -n {{ sentinel_namespace }} --timeout=5m
+    --kubeconfig {{ ansible_env.HOME }}/.kube/config-sentinel-home
+  become_user: "{{ platform_user }}"
+  changed_when: false
+  ignore_errors: true
+
+- name: Wait for frontend rollout
+  ansible.builtin.command: >
+    kubectl rollout status deployment/sentinel-home-frontend
+    -n {{ sentinel_namespace }} --timeout=5m
+    --kubeconfig {{ ansible_env.HOME }}/.kube/config-sentinel-home
+  become_user: "{{ platform_user }}"
+  changed_when: false
+  ignore_errors: true

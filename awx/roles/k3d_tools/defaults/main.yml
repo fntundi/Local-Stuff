@@ -1,0 +1,5 @@
+---
+kubectl_version: stable   # "stable" fetches latest stable from dl.k8s.io
+k3d_version: latest
+helm_version: latest
+k9s_install: true

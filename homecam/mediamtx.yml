@@ -1,0 +1,29 @@
+# Sentinel NOC - MediaMTX (RTSP/HLS media server) configuration
+logLevel: info
+logDestinations: [stdout]
+readTimeout: 10s
+writeTimeout: 10s
+
+# API (used by backend to manage streams)
+api: yes
+apiAddress: :9997
+
+# RTSP server
+rtspAddress: :8554
+
+# HLS server (for browser playback)
+hlsAddress: :8888
+hlsAlwaysRemux: yes
+hlsSegmentCount: 3
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsSegmentMaxSize: 50M
+
+# Metrics
+metrics: no
+pprof: no
+
+# Paths - allow dynamic publishing
+paths:
+  all_others:
+    source: publisher

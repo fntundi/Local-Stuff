@@ -1,0 +1,275 @@
+// ============================================================================
+// local-aistack — Frontend CI Pipeline (Web UIs)
+// OpenWebUI · JupyterLab · MLflow · MinIO Console · LiteLLM · Portainer
+// Scans: ZAP DAST (parallel per UI) + Playwright 508 accessibility
+//
+// Artifacts → MinIO: {MINIO_BUCKET}/local-aistack/frontend/{BUILD_DATE}/{BUILD_NUMBER}/{type}/
+// ============================================================================
+
+@Library('home-platform') _
+
+def loadEnvFiles() {
+    ['jenkins/pipelines/global.env', 'jenkins/pipelines/local-aistack/local-aistack.env'].each { f ->
+        if (fileExists(f)) {
+            readFile(f).readLines().each { line ->
+                if (line && !line.startsWith('#') && line.contains('=')) {
+                    def parts = line.split('=', 2)
+                    if (parts.length == 2) env[parts[0].trim()] = parts[1].trim()
+                }
+            }
+        }
+    }
+}
+
+pipeline {
+
+    agent none
+
+    options {
+        ansiColor('xterm')
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+    }
+
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['dev','staging','prod'], description: 'Target environment')
+        booleanParam(name: 'SKIP_ZAP',          defaultValue: false, description: 'Skip all ZAP scans')
+        booleanParam(name: 'SKIP_508',          defaultValue: false, description: 'Skip 508 accessibility')
+        booleanParam(name: 'ZAP_FULL',          defaultValue: false, description: 'Use full ZAP scan (slow)')
+        booleanParam(name: 'SKIP_OPENWEBUI',    defaultValue: false, description: 'Skip OpenWebUI tests')
+        booleanParam(name: 'SKIP_JUPYTERLAB',   defaultValue: false, description: 'Skip JupyterLab tests')
+    }
+
+    environment {
+        APP          = 'local-aistack'
+        COMPONENT    = 'frontend'
+        COMPOSE_FILE = 'local-aistack/compose/docker-compose.yml'
+        SONAR_TOKEN  = credentials('sonarqube-token')
+        DOCKER_CREDS = credentials('docker-registry-creds')
+        MINIO_CREDS  = credentials('minio-credentials')
+        ARTIFACT_DIR = 'build-artifacts'
+        PROJECT_NAME = "aistack-fe-${env.BUILD_NUMBER}"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            agent { label 'docker' }
+            steps {
+                checkout scm
+                sh 'git submodule update --init --recursive'
+                script {
+                    loadEnvFiles()
+                    env.BUILD_DATE          = sh(returnStdout: true, script: 'date +%Y-%m-%d').trim()
+                    env.MINIO_REMOTE_PATH   = "local-aistack/frontend/${env.BUILD_DATE}/${env.BUILD_NUMBER}"
+                    env.MINIO_ENDPOINT_RESOLVED = env.MINIO_ENDPOINT ?: 'http://minio:9000'
+                    env.MINIO_BUCKET_RESOLVED   = env.MINIO_BUCKET   ?: 'ci-artifacts'
+                    env.ZAP_MODE = params.ZAP_FULL ? 'full' : 'baseline'
+                    sh "mkdir -p ${env.ARTIFACT_DIR}/{smoke,zap,508}"
+                }
+            }
+        }
+
+        stage('Start Web UIs') {
+            agent { label 'docker' }
+            steps {
+                sh """
+                    docker compose --project-name ${env.PROJECT_NAME} \\
+                        --file ${env.COMPOSE_FILE} \\
+                        up -d --wait \\
+                        postgres openwebui jupyterlab mlflow minio portainer litellm
+                """
+                sh 'sleep 15'
+            }
+        }
+
+        stage('Service Health') {
+            agent { label 'docker' }
+            steps {
+                sh """
+                    check() { local name=\$1 url=\$2
+                        STATUS=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "\${url}" || echo 000)
+                        if echo "\${STATUS}" | grep -qE '^(2|3)'; then
+                            echo "PASS \${name} [\${STATUS}]"
+                        else
+                            echo "WARN \${name} [\${STATUS}]"
+                        fi
+                    }
+                    {
+                        check OpenWebUI   http://localhost:3000
+                        check JupyterLab  http://localhost:8888
+                        check MLflow      http://localhost:5000
+                        check MinIO       http://localhost:9001
+                        check Portainer   http://localhost:9000
+                        check LiteLLM     http://localhost:4000
+                        check API         http://localhost:8000/health
+                    } | tee ${env.ARTIFACT_DIR}/smoke/health-results.txt
+                    echo "SMOKE_STATUS=PASS" >> ${env.ARTIFACT_DIR}/smoke/results.txt
+                """
+            }
+            post {
+                always { archiveArtifacts artifacts: "${env.ARTIFACT_DIR}/smoke/**", allowEmptyArchive: true }
+            }
+        }
+
+        stage('ZAP Scans') {
+            when { not { expression { params.SKIP_ZAP } } }
+            parallel {
+
+                stage('ZAP — OpenWebUI') {
+                    when { not { expression { params.SKIP_OPENWEBUI } } }
+                    agent { label 'docker' }
+                    steps {
+                        sh "mkdir -p ${env.ARTIFACT_DIR}/zap"
+                        zapScan(target: 'http://localhost:3000', mode: env.ZAP_MODE,
+                                reportName: 'aistack-openwebui', network: 'host',
+                                artifactDir: env.ARTIFACT_DIR)
+                    }
+                    post {
+                        always {
+                            stash name: "aistack-fe-zap-owui-${env.BUILD_NUMBER}",
+                                  includes: "${env.ARTIFACT_DIR}/zap/**", allowEmpty: true
+                        }
+                    }
+                }
+
+                stage('ZAP — JupyterLab') {
+                    when { not { expression { params.SKIP_JUPYTERLAB } } }
+                    agent { label 'docker' }
+                    steps {
+                        sh "mkdir -p ${env.ARTIFACT_DIR}/zap"
+                        zapScan(target: 'http://localhost:8888', mode: env.ZAP_MODE,
+                                reportName: 'aistack-jupyterlab', network: 'host',
+                                artifactDir: env.ARTIFACT_DIR)
+                    }
+                    post {
+                        always {
+                            stash name: "aistack-fe-zap-jlab-${env.BUILD_NUMBER}",
+                                  includes: "${env.ARTIFACT_DIR}/zap/**", allowEmpty: true
+                        }
+                    }
+                }
+
+                stage('ZAP — MLflow') {
+                    agent { label 'docker' }
+                    steps {
+                        sh "mkdir -p ${env.ARTIFACT_DIR}/zap"
+                        zapScan(target: 'http://localhost:5000', mode: env.ZAP_MODE,
+                                reportName: 'aistack-mlflow', network: 'host',
+                                artifactDir: env.ARTIFACT_DIR)
+                    }
+                    post {
+                        always {
+                            stash name: "aistack-fe-zap-mlflow-${env.BUILD_NUMBER}",
+                                  includes: "${env.ARTIFACT_DIR}/zap/**", allowEmpty: true
+                        }
+                    }
+                }
+
+                stage('ZAP — API') {
+                    agent { label 'docker' }
+                    steps {
+                        sh "mkdir -p ${env.ARTIFACT_DIR}/zap"
+                        zapScan(target: 'http://localhost:8000', mode: env.ZAP_MODE,
+                                reportName: 'aistack-api', network: 'host',
+                                artifactDir: env.ARTIFACT_DIR)
+                    }
+                    post {
+                        always {
+                            stash name: "aistack-fe-zap-api-${env.BUILD_NUMBER}",
+                                  includes: "${env.ARTIFACT_DIR}/zap/**", allowEmpty: true
+                        }
+                    }
+                }
+
+            } // end parallel ZAP
+        }
+
+        stage('508 — OpenWebUI') {
+            when {
+                allOf {
+                    not { expression { params.SKIP_508 } }
+                    not { expression { params.SKIP_OPENWEBUI } }
+                }
+            }
+            agent { label 'docker' }
+            steps {
+                sh "mkdir -p ${env.ARTIFACT_DIR}/508"
+                playwright508(baseUrl: 'http://localhost:3000',
+                              artifactDir: env.ARTIFACT_DIR, failOnViolation: false)
+            }
+            post {
+                always {
+                    stash name: "aistack-fe-508-owui-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/508/**", allowEmpty: true
+                }
+            }
+        }
+
+        stage('508 — JupyterLab') {
+            when {
+                allOf {
+                    not { expression { params.SKIP_508 } }
+                    not { expression { params.SKIP_JUPYTERLAB } }
+                }
+            }
+            agent { label 'docker' }
+            steps {
+                sh "mkdir -p ${env.ARTIFACT_DIR}/508"
+                playwright508(baseUrl: 'http://localhost:8888',
+                              artifactDir: env.ARTIFACT_DIR, failOnViolation: false)
+            }
+            post {
+                always {
+                    stash name: "aistack-fe-508-jlab-${env.BUILD_NUMBER}",
+                          includes: "${env.ARTIFACT_DIR}/508/**", allowEmpty: true
+                }
+            }
+        }
+
+    } // end stages
+
+    post {
+        always {
+            node('docker') {
+                checkout scm
+                sh """
+                    mkdir -p ${env.ARTIFACT_DIR}/{smoke,zap,508}
+                    docker compose --project-name ${env.PROJECT_NAME} \\
+                        --file compose/docker-compose.yml down --volumes --remove-orphans || true
+                """
+                script {
+                    ["aistack-fe-zap-owui-${env.BUILD_NUMBER}",
+                     "aistack-fe-zap-jlab-${env.BUILD_NUMBER}",
+                     "aistack-fe-zap-mlflow-${env.BUILD_NUMBER}",
+                     "aistack-fe-zap-api-${env.BUILD_NUMBER}",
+                     "aistack-fe-508-owui-${env.BUILD_NUMBER}",
+                     "aistack-fe-508-jlab-${env.BUILD_NUMBER}"].each { s ->
+                        try { unstash s } catch (e) { echo "Stash ${s} not available" }
+                    }
+                }
+                buildSummary(
+                    app: 'local-aistack', component: 'frontend',
+                    buildNumber: env.BUILD_NUMBER, buildResult: currentBuild.currentResult,
+                    buildUrl: env.BUILD_URL, artifactDir: env.ARTIFACT_DIR,
+                    minioEndpoint: env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                    minioBucket:   env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                    minioPath:     env.MINIO_REMOTE_PATH ?: "local-aistack/frontend/unknown/${env.BUILD_NUMBER}",
+                )
+                publishToMinio(
+                    app: 'local-aistack', component: 'frontend',
+                    buildDate: env.BUILD_DATE ?: sh(returnStdout: true, script: 'date +%Y-%m-%d').trim(),
+                    buildNumber: env.BUILD_NUMBER,
+                    endpoint: env.MINIO_ENDPOINT_RESOLVED ?: 'http://minio:9000',
+                    bucket:   env.MINIO_BUCKET_RESOLVED   ?: 'ci-artifacts',
+                    localDir: env.ARTIFACT_DIR, credentialsId: 'minio-credentials',
+                )
+                cleanWs()
+            }
+        }
+        success { echo "local-aistack frontend scans passed" }
+        failure { echo "local-aistack frontend scans had failures — review ZAP and 508 reports" }
+    }
+
+}

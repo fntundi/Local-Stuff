@@ -1,0 +1,43 @@
+services:
+  db:
+    image: ${SONARQUBE_POSTGRES_IMAGE}
+    container_name: sonarqube-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${SONARQUBE_DB_NAME}
+      POSTGRES_USER: ${SONARQUBE_DB_USER}
+      POSTGRES_PASSWORD: ${SONARQUBE_DB_PASSWORD}
+    volumes:
+      - {{ sonarqube_db_dir }}:/var/lib/postgresql/data
+    networks:
+      - {{ sonarqube_network }}
+
+  sonarqube:
+    image: ${SONARQUBE_IMAGE}
+    container_name: sonarqube
+    depends_on:
+      - db
+    restart: unless-stopped
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://db:5432/${SONARQUBE_DB_NAME}
+      SONAR_JDBC_USERNAME: ${SONARQUBE_DB_USER}
+      SONAR_JDBC_PASSWORD: ${SONARQUBE_DB_PASSWORD}
+    volumes:
+      - {{ sonarqube_data_dir }}:/opt/sonarqube/data
+      - {{ sonarqube_extensions_dir }}:/opt/sonarqube/extensions
+      - {{ sonarqube_logs_dir }}:/opt/sonarqube/logs
+    ports:
+      - "${SONARQUBE_HTTP_PORT}:9000"
+    ulimits:
+      nofile:
+        soft: 131072
+        hard: 131072
+      nproc:
+        soft: 8192
+        hard: 8192
+    networks:
+      - {{ sonarqube_network }}
+
+networks:
+  {{ sonarqube_network }}:
+    external: true

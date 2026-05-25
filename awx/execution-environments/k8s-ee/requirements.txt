@@ -1,0 +1,7 @@
+# Python packages for k8s-ee
+kubernetes>=28.1.0
+docker>=7.0.0
+jmespath>=1.0.1
+netaddr>=0.9.0
+passlib>=1.7.4
+openshift>=0.13.2

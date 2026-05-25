@@ -1,3 +1,9 @@
-[submodule "Homecam"]
-	path = Homecam
+[submodule "local-aistack"]
+	path = local-aistack
+	url = git@github.com:fntundi/local-aistack.git
+[submodule "Sentinel-Home"]
+	path = Sentinel-Home
 	url = git@github.com:fntundi/Sentinel-Home.git
+[submodule "homecam"]
+	path = homecam
+	url = git@github.com:fntundi/HomeCam.git

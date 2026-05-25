@@ -1,0 +1,9 @@
+---
+- name: Create AI Platform data directories
+  ansible.builtin.file:
+    path: "{{ platform_data_root }}/{{ item.path }}"
+    state: directory
+    owner: "{{ item.uid }}"
+    group: "{{ item.gid | default(item.uid) }}"
+    mode: "0755"
+  loop: "{{ platform_data_dirs | selectattr('path', 'match', '^(postgres|qdrant|ollama|minio|mlflow|redis|activepieces|openwebui|jupyter|rag-runner|portainer|langfuse)') | list }}"
