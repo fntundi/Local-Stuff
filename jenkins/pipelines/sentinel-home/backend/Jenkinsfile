@@ -41,7 +41,7 @@ pipeline {
         APP          = 'sentinel-home'
         COMPONENT    = 'backend'
         BUILD_IMAGE  = 'python:3.11-slim'   // TODO: update when stack is defined
-        BACKEND_DIR  = 'Sentinel-Home/backend'
+        BACKEND_DIR  = 'sentinel-home/backend'
         IMAGE_NAME   = "${env.DOCKER_REGISTRY ?: 'localhost:5000'}/sentinel-home-backend"
         SONAR_TOKEN  = credentials('sonarqube-token')
         DOCKER_CREDS = credentials('docker-registry-creds')

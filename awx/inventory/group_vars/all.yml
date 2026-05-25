@@ -244,8 +244,8 @@ authentik_error_reporting_enabled: false
 # HomeCam (Sentinel NOC)
 # -----------------------------------------------------------------------------
 homecam_deploy_strategy: "{{ deploy_strategy }}"
-homecam_compose_dir: "{{ platform_repo_root }}/homecam"
-homecam_k8s_dir: "{{ platform_repo_root }}/homecam/k8s"
+homecam_compose_dir: "{{ platform_repo_root }}/HomeCam"
+homecam_k8s_dir: "{{ platform_repo_root }}/HomeCam/k8s"
 homecam_k3d_cluster: "{{ k3d_homecam_cluster }}"
 
 # Secrets — provided by vault/AWX
@@ -318,11 +318,11 @@ authentik_pg_password: "{{ vault_authentik_pg_password }}"
 # Sentinel-Home
 # -----------------------------------------------------------------------------
 sentinel_deploy_strategy: k8s
-sentinel_compose_dir: "{{ platform_repo_root }}/Sentinel-Home"
+sentinel_compose_dir: "{{ platform_repo_root }}/sentinel-home"
 sentinel_project_name: sentinel-home
 sentinel_k8s_dir: "{{ sentinel_compose_dir }}/k8s"
 sentinel_k3d_cluster: "{{ k3d_sentinel_home_cluster }}"
-sentinel_k3d_config: "{{ platform_repo_root }}/sentinel-home/k8s/k3d-config.yaml"
+sentinel_k3d_config: "{{ platform_repo_root }}/infra/sentinel-home/k3d-config.yaml"
 sentinel_namespace: "{{ k8s_sentinel_home_namespace }}"
 sentinel_hostname: sentinel.blackiechan.net
 sentinel_base_url: "https://sentinel.blackiechan.net"

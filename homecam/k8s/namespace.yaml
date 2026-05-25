@@ -1,7 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: sentinel-noc
-  labels:
-    app.kubernetes.io/name: sentinel-noc
-    app.kubernetes.io/part-of: sentinel-noc

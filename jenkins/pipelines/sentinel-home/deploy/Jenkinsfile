@@ -43,8 +43,8 @@ pipeline {
         APP          = 'sentinel-home'
         COMPONENT    = 'deploy'
         NAMESPACE    = 'sentinel-home'
-        K8S_DIR      = 'Sentinel-Home/k8s'
-        K3D_CONFIG   = 'sentinel-home/k8s/k3d-config.yaml'
+        K8S_DIR      = 'sentinel-home/k8s'
+        K3D_CONFIG   = 'infra/sentinel-home/k3d-config.yaml'
         IMAGE_TAG    = "${params.DOCKER_TAG}"
         KUBE_CONFIG  = credentials('kubeconfig-sentinel')
         DOCKER_CREDS = credentials('docker-registry-creds')

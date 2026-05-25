@@ -45,7 +45,7 @@ pipeline {
         APP          = 'sentinel-home'
         COMPONENT    = 'frontend'
         BUILD_IMAGE  = 'node:20-alpine'   // TODO: update when framework is chosen
-        FRONTEND_DIR = 'Sentinel-Home/frontend'
+        FRONTEND_DIR = 'sentinel-home/frontend'
         IMAGE_NAME   = "${env.DOCKER_REGISTRY ?: 'localhost:5000'}/sentinel-home-frontend"
         SONAR_TOKEN  = credentials('sonarqube-token')
         DOCKER_CREDS = credentials('docker-registry-creds')
