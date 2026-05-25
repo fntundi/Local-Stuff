@@ -1,0 +1,23 @@
+---
+# GitLab CE deployment defaults
+gitlab_root: "{{ platform_home }}/gitlab"
+gitlab_workdir: "{{ gitlab_root }}/work"
+gitlab_project_name: gitlab
+gitlab_image: gitlab/gitlab-ce:latest
+gitlab_hostname: "{{ vault_gitlab_hostname | default('gitlab.blackiechan.net') }}"
+gitlab_host_ip: 192.168.4.14       # ← override per host in inventory
+gitlab_http_port: 80
+gitlab_https_port: 443
+gitlab_ssh_port: 22
+gitlab_config_path: /srv/gitlab/config
+gitlab_data_path: /srv/gitlab/data
+gitlab_logs_path: /srv/gitlab/logs
+gitlab_root_password: "{{ vault_gitlab_root_password }}"
+gitlab_oidc_enabled: true
+gitlab_oidc_client_id: "{{ vault_gitlab_oidc_client_id }}"
+gitlab_oidc_client_secret: "{{ vault_gitlab_oidc_client_secret }}"
+gitlab_authentik_host: "{{ authentik_host | default('authentik.blackiechan.net') }}"
+gitlab_network: gitlab-net
+gitlab_subnet: 172.26.0.0/16
+# Platform service URLs for /etc/hosts injection (so VM reaches home-server)
+platform_home_server_ip: "{{ hostvars['home-server'].ansible_host | default('192.168.1.100') }}"

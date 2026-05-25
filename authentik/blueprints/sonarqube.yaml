@@ -1,0 +1,79 @@
+version: 1
+metadata:
+  name: sonarqube
+  labels:
+    blueprints.goauthentik.io/description: "SonarQube — SAML Provider + Application"
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+
+  # ── Access group ──────────────────────────────────────────────────────────
+  - id: sonarqube-group
+    model: authentik_core.group
+    state: present
+    identifiers:
+      name: sonarqube-users
+    attrs:
+      name: sonarqube-users
+
+  # ── SAML Provider ─────────────────────────────────────────────────────────
+  - id: sonarqube-provider
+    model: authentik_providers_saml.samlprovider
+    state: present
+    identifiers:
+      name: SonarQube
+    attrs:
+      name: SonarQube
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-invalidation-flow]]
+      acs_url: https://sonarqube.blackiechan.net/saml2/acs
+      issuer: https://sonarqube.blackiechan.net
+      sp_binding: post
+      name_id_mapping: !Find [authentik_providers_saml.samlpropertymapping, [friendly_name, User ID]]
+      property_mappings:
+        - !Find [authentik_providers_saml.samlpropertymapping, [friendly_name, UPN]]
+        - !Find [authentik_providers_saml.samlpropertymapping, [friendly_name, Name]]
+        - !Find [authentik_providers_saml.samlpropertymapping, [friendly_name, Email]]
+      assertion_valid_not_before: minutes=-5
+      assertion_valid_not_on_or_after: minutes=5
+      session_valid_not_on_or_after: minutes=86400
+      digest_algorithm: http://www.w3.org/2001/04/xmldsig-more#rsa-sha256
+      signature_algorithm: http://www.w3.org/2001/04/xmldsig-more#rsa-sha256
+      sign_assertion: true
+      sign_response: false
+
+  # ── Application ───────────────────────────────────────────────────────────
+  - id: sonarqube-app
+    model: authentik_core.application
+    state: present
+    identifiers:
+      slug: sonarqube
+    attrs:
+      name: SonarQube
+      slug: sonarqube
+      provider: !KeyOf sonarqube-provider
+      meta_description: "SonarQube code quality and security analysis"
+      meta_publisher: "Home Platform"
+      open_in_new_tab: false
+      policy_engine_mode: any
+
+  # ── Policy binding — restrict access to sonarqube-users group ─────────────
+  - model: authentik_policies_event_matcher.eventmatcherpolicy
+    state: absent
+    identifiers:
+      name: sonarqube-group-binding    # remove stale bindings on re-apply
+
+  - id: sonarqube-group-binding
+    model: authentik_core.policybinding
+    state: present
+    identifiers:
+      order: 10
+      target: !KeyOf sonarqube-app
+      group: !KeyOf sonarqube-group
+    attrs:
+      order: 10
+      target: !KeyOf sonarqube-app
+      group: !KeyOf sonarqube-group
+      enabled: true
+      negate: false
+      timeout: 30

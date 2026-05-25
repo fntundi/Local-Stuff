@@ -1,0 +1,32 @@
+# Traefik Dynamic Config — SonarQube
+# SonarQube runs on sonarqube-server (192.168.1.110:9000), separate host from home-server.
+# Traefik routes from home-server to SonarQube over the LAN.
+# No forward-auth middleware — SonarQube handles authentication itself via SAML (Authentik).
+
+http:
+  routers:
+    sonarqube:
+      rule: "Host(`sonarqube.blackiechan.net`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: sonarqube-svc
+      middlewares: [sonarqube-security-headers]
+
+  services:
+    sonarqube-svc:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.1.110:9000"   # sonarqube-server LAN IP
+        passHostHeader: true
+
+  middlewares:
+    sonarqube-security-headers:
+      headers:
+        stsSeconds: 31536000
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-App: "SonarQube"
+          X-Powered-By: ""

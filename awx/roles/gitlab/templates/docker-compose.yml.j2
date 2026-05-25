@@ -1,0 +1,20 @@
+services:
+  gitlab:
+    image: {{ gitlab_image }}
+    container_name: gitlab
+    hostname: {{ gitlab_hostname }}
+    restart: unless-stopped
+    ports:
+      - "{{ gitlab_http_port }}:80"
+      - "{{ gitlab_https_port }}:443"
+      - "{{ gitlab_ssh_port }}:22"
+    volumes:
+      - {{ gitlab_config_path }}:/etc/gitlab
+      - {{ gitlab_data_path }}:/var/opt/gitlab
+      - {{ gitlab_logs_path }}:/var/log/gitlab
+    networks:
+      - {{ gitlab_network }}
+
+networks:
+  {{ gitlab_network }}:
+    external: true

@@ -1,0 +1,70 @@
+version: 1
+metadata:
+  name: local-aistack
+  labels:
+    blueprints.goauthentik.io/description: "AI Platform — Proxy Provider + Application"
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+
+  # ── Access group ──────────────────────────────────────────────────────────
+  - id: aistack-group
+    model: authentik_core.group
+    state: present
+    identifiers:
+      name: aistack-users
+    attrs:
+      name: aistack-users
+
+  # ── Proxy Provider (forward-auth, single-app mode) ────────────────────────
+  - id: aistack-provider
+    model: authentik_providers_proxy.proxyprovider
+    state: present
+    identifiers:
+      name: AI Platform
+    attrs:
+      name: AI Platform
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-invalidation-flow]]
+      mode: forward_single
+      external_host: https://chat.blackiechan.net
+      access_token_validity: hours=24
+      refresh_token_validity: days=7
+      # Trust X-Forwarded-For from Traefik on the same home-net
+      internal_host_ssl_validation: false
+
+  # ── Application ───────────────────────────────────────────────────────────
+  - id: aistack-app
+    model: authentik_core.application
+    state: present
+    identifiers:
+      slug: local-aistack
+    attrs:
+      name: AI Platform
+      slug: local-aistack
+      provider: !KeyOf aistack-provider
+      meta_description: "Local AI stack — OpenWebUI and supporting services"
+      meta_publisher: "Home Platform"
+      open_in_new_tab: false
+      policy_engine_mode: any
+
+  # ── Policy binding — restrict access to aistack-users group ──────────────
+  - model: authentik_policies_event_matcher.eventmatcherpolicy
+    state: absent
+    identifiers:
+      name: aistack-group-binding    # remove stale bindings on re-apply
+
+  - id: aistack-group-binding
+    model: authentik_core.policybinding
+    state: present
+    identifiers:
+      order: 10
+      target: !KeyOf aistack-app
+      group: !KeyOf aistack-group
+    attrs:
+      order: 10
+      target: !KeyOf aistack-app
+      group: !KeyOf aistack-group
+      enabled: true
+      negate: false
+      timeout: 30

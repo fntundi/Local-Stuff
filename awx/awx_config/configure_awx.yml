@@ -206,6 +206,30 @@
               type: string
               label: "Sentinel-Home Encryption Key"
               secret: true
+            - id: vault_jenkins_oidc_client_id
+              type: string
+              label: "Jenkins Authentik OIDC Client ID"
+              secret: true
+            - id: vault_jenkins_oidc_client_secret
+              type: string
+              label: "Jenkins Authentik OIDC Client Secret"
+              secret: true
+            - id: vault_gitlab_root_password
+              type: string
+              label: "GitLab Root Password"
+              secret: true
+            - id: vault_gitlab_oidc_client_id
+              type: string
+              label: "GitLab Authentik OIDC Client ID"
+              secret: true
+            - id: vault_gitlab_oidc_client_secret
+              type: string
+              label: "GitLab Authentik OIDC Client Secret"
+              secret: true
+            - id: vault_sonarqube_saml_cert
+              type: string
+              label: "SonarQube Authentik SAML Certificate"
+              secret: true
         injectors:
           extra_vars:
             vault_traefik_dashboard_users:    "{{ '{{' }} vault_traefik_dashboard_users {{ '}}' }}"
@@ -247,6 +271,12 @@
             vault_sentinel_jwt_secret:        "{{ '{{' }} vault_sentinel_jwt_secret {{ '}}' }}"
             vault_sentinel_mongo_password:    "{{ '{{' }} vault_sentinel_mongo_password {{ '}}' }}"
             vault_sentinel_encryption_key:    "{{ '{{' }} vault_sentinel_encryption_key {{ '}}' }}"
+            vault_jenkins_oidc_client_id:     "{{ '{{' }} vault_jenkins_oidc_client_id {{ '}}' }}"
+            vault_jenkins_oidc_client_secret: "{{ '{{' }} vault_jenkins_oidc_client_secret {{ '}}' }}"
+            vault_gitlab_root_password:       "{{ '{{' }} vault_gitlab_root_password {{ '}}' }}"
+            vault_gitlab_oidc_client_id:      "{{ '{{' }} vault_gitlab_oidc_client_id {{ '}}' }}"
+            vault_gitlab_oidc_client_secret:  "{{ '{{' }} vault_gitlab_oidc_client_secret {{ '}}' }}"
+            vault_sonarqube_saml_cert:        "{{ '{{' }} vault_sonarqube_saml_cert {{ '}}' }}"
         state: present
       tags: [credentials]
 
@@ -393,6 +423,21 @@
         state: present
       tags: [inventory]
 
+    - name: Add gitlab-server host
+      awx.awx.host:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: gitlab-server
+        inventory: "Home Platform"
+        enabled: true
+        variables:
+          ansible_host: 192.168.4.14
+          ansible_user: bchan
+        state: present
+      tags: [inventory]
+
     - name: Create home inventory groups
       awx.awx.group:
         controller_host:     "{{ controller_host }}"
@@ -422,8 +467,9 @@
         state: present
       loop:
         - { name: sonarqube_servers, hosts: [sonarqube-server] }
-        - { name: jenkins_servers, hosts: [jenkins-server] }
-        - { name: jenkins_runners, hosts: [jenkins-runner] }
+        - { name: jenkins_servers,   hosts: [jenkins-server] }
+        - { name: jenkins_runners,   hosts: [jenkins-runner] }
+        - { name: gitlab_servers,    hosts: [gitlab-server] }
       tags: [inventory]
 
     # ── Project ───────────────────────────────────────────────────────────────
@@ -545,6 +591,22 @@
           playbook: awx/playbooks/ci/12_deploy_jenkins_runner.yml
           ee: base-ee
           limit: jenkins_runners
+        # GitLab
+        - name: "GitLab | 01 Provision Host"
+          playbook: awx/playbooks/ci/01_provision_server.yml
+          become: true
+          ee: base-ee
+          limit: gitlab_servers
+        - name: "GitLab | 02 Install Docker"
+          playbook: awx/playbooks/ci/02_install_docker.yml
+          become: true
+          ee: base-ee
+          limit: gitlab_servers
+        - name: "GitLab | 03 Deploy"
+          playbook: awx/playbooks/ci/13_deploy_gitlab.yml
+          become: true
+          ee: docker-ee
+          limit: gitlab_servers
         # Operations
         - name: "Ops | Health Check"
           playbook: awx/playbooks/ops/20_health_check.yml
@@ -782,5 +844,165 @@
         identifier: sentinel_home
         unified_job_template: "Deploy | Sentinel-Home"
         success_nodes: ["{{ node_authentik.id }}"]
+        state: present
+      tags: [workflows]
+
+    # ── Bootstrap CI VM workflows (Jenkins / GitLab / SonarQube) ─────────────
+    - name: Create Bootstrap Jenkins workflow
+      awx.awx.workflow_job_template:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "Bootstrap Jenkins"
+        organization: "{{ awx_organization }}"
+        description: "Provision Ubuntu VM → Docker → Deploy Jenkins with Authentik OIDC"
+        inventory: "Home Platform"
+        state: present
+      tags: [workflows]
+
+    - name: "Bootstrap Jenkins — node: Provision"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Bootstrap Jenkins"
+        identifier: jenkins_provision
+        unified_job_template: "Jenkins | 01 Provision Host"
+        state: present
+      register: bj_provision
+      tags: [workflows]
+
+    - name: "Bootstrap Jenkins — node: Docker"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Bootstrap Jenkins"
+        identifier: jenkins_docker
+        unified_job_template: "Jenkins | 02 Install Docker"
+        success_nodes: ["{{ bj_provision.id }}"]
+        state: present
+      register: bj_docker
+      tags: [workflows]
+
+    - name: "Bootstrap Jenkins — node: Deploy"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Bootstrap Jenkins"
+        identifier: jenkins_deploy
+        unified_job_template: "Jenkins | 03 Deploy"
+        success_nodes: ["{{ bj_docker.id }}"]
+        state: present
+      tags: [workflows]
+
+    - name: Create Bootstrap SonarQube workflow
+      awx.awx.workflow_job_template:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "Bootstrap SonarQube"
+        organization: "{{ awx_organization }}"
+        description: "Provision Ubuntu VM → Docker → Deploy SonarQube with Authentik SAML"
+        inventory: "Home Platform"
+        state: present
+      tags: [workflows]
+
+    - name: "Bootstrap SonarQube — node: Provision"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Bootstrap SonarQube"
+        identifier: sonar_provision
+        unified_job_template: "SonarQube | 01 Provision Host"
+        state: present
+      register: bs_provision
+      tags: [workflows]
+
+    - name: "Bootstrap SonarQube — node: Docker"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Bootstrap SonarQube"
+        identifier: sonar_docker
+        unified_job_template: "SonarQube | 02 Install Docker"
+        success_nodes: ["{{ bs_provision.id }}"]
+        state: present
+      register: bs_docker
+      tags: [workflows]
+
+    - name: "Bootstrap SonarQube — node: Deploy"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Bootstrap SonarQube"
+        identifier: sonar_deploy
+        unified_job_template: "SonarQube | 03 Deploy"
+        success_nodes: ["{{ bs_docker.id }}"]
+        state: present
+      tags: [workflows]
+
+    - name: Create Bootstrap GitLab workflow
+      awx.awx.workflow_job_template:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        name: "Bootstrap GitLab"
+        organization: "{{ awx_organization }}"
+        description: "Provision Ubuntu VM → Docker → Deploy GitLab CE with Authentik OIDC"
+        inventory: "Home Platform"
+        state: present
+      tags: [workflows]
+
+    - name: "Bootstrap GitLab — node: Provision"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Bootstrap GitLab"
+        identifier: gitlab_provision
+        unified_job_template: "GitLab | 01 Provision Host"
+        state: present
+      register: bg_provision
+      tags: [workflows]
+
+    - name: "Bootstrap GitLab — node: Docker"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Bootstrap GitLab"
+        identifier: gitlab_docker
+        unified_job_template: "GitLab | 02 Install Docker"
+        success_nodes: ["{{ bg_provision.id }}"]
+        state: present
+      register: bg_docker
+      tags: [workflows]
+
+    - name: "Bootstrap GitLab — node: Deploy"
+      awx.awx.workflow_job_template_node:
+        controller_host:     "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+        workflow_job_template: "Bootstrap GitLab"
+        identifier: gitlab_deploy
+        unified_job_template: "GitLab | 03 Deploy"
+        success_nodes: ["{{ bg_docker.id }}"]
         state: present
       tags: [workflows]

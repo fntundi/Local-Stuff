@@ -1,0 +1,74 @@
+version: 1
+metadata:
+  name: gitlab
+  labels:
+    blueprints.goauthentik.io/description: "GitLab — OAuth2/OIDC Provider + Application"
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+
+  # ── Access group ──────────────────────────────────────────────────────────
+  - id: gitlab-group
+    model: authentik_core.group
+    state: present
+    identifiers:
+      name: gitlab-users
+    attrs:
+      name: gitlab-users
+
+  # ── OAuth2/OpenID Provider ────────────────────────────────────────────────
+  - id: gitlab-provider
+    model: authentik_providers_oauth2.oauth2provider
+    state: present
+    identifiers:
+      name: GitLab
+    attrs:
+      name: GitLab
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-invalidation-flow]]
+      client_type: confidential
+      redirect_uris: "https://gitlab.blackiechan.net/users/auth/openid_connect/callback"
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+      sub_mode: hashed_user_id
+      include_claims_in_id_token: true
+      access_token_validity: minutes=5
+      refresh_token_validity: days=30
+
+  # ── Application ───────────────────────────────────────────────────────────
+  - id: gitlab-app
+    model: authentik_core.application
+    state: present
+    identifiers:
+      slug: gitlab
+    attrs:
+      name: GitLab
+      slug: gitlab
+      provider: !KeyOf gitlab-provider
+      meta_description: "GitLab source code management"
+      meta_publisher: "Home Platform"
+      open_in_new_tab: false
+      policy_engine_mode: any
+
+  # ── Policy binding — restrict access to gitlab-users group ────────────────
+  - model: authentik_policies_event_matcher.eventmatcherpolicy
+    state: absent
+    identifiers:
+      name: gitlab-group-binding    # remove stale bindings on re-apply
+
+  - id: gitlab-group-binding
+    model: authentik_core.policybinding
+    state: present
+    identifiers:
+      order: 10
+      target: !KeyOf gitlab-app
+      group: !KeyOf gitlab-group
+    attrs:
+      order: 10
+      target: !KeyOf gitlab-app
+      group: !KeyOf gitlab-group
+      enabled: true
+      negate: false
+      timeout: 30

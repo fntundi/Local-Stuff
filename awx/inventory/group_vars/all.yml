@@ -373,9 +373,12 @@ jenkins_docker_password: "{{ vault_jenkins_docker_password }}"
 jenkins_minio_access_key: "{{ vault_jenkins_minio_access_key }}"
 jenkins_minio_secret_key: "{{ vault_jenkins_minio_secret_key }}"
 jenkins_docker_registry:  localhost:5000
-jenkins_minio_endpoint:   http://minio:9000
+jenkins_minio_endpoint:   "https://minio.{{ domain_public }}"
 jenkins_minio_bucket:     jenkins-artifacts
-jenkins_sonarqube_url:    http://sonarqube-server:9000
+jenkins_sonarqube_url:    "http://{{ hostvars['sonarqube-server'].ansible_host | default('192.168.1.110') }}:9000"
+jenkins_oidc_client_id:   "{{ vault_jenkins_oidc_client_id }}"
+jenkins_oidc_client_secret: "{{ vault_jenkins_oidc_client_secret }}"
+jenkins_oidc_well_known_url: "https://{{ authentik_host }}/application/o/jenkins/.well-known/openid-configuration"
 jenkins_traefik_network:   home-net
 jenkins_runner_name:     docker
 jenkins_runner_label:    docker
@@ -398,3 +401,25 @@ sonarqube_db_user:       sonar
 sonarqube_db_password:   "{{ vault_sonarqube_db_password }}"
 sonarqube_network:       sonarqube-net
 sonarqube_subnet:        172.25.0.0/16
+sonarqube_hostname:      "sonarqube.{{ domain_public }}"
+sonarqube_saml_enabled:  true
+sonarqube_saml_provider_name: "Authentik"
+sonarqube_saml_idp_entity_id: "https://{{ authentik_host }}"
+sonarqube_saml_idp_sso_url:   "https://{{ authentik_host }}/application/saml/sonarqube/sso/binding/redirect/"
+sonarqube_saml_sp_entity_id:  "https://sonarqube.{{ domain_public }}"
+sonarqube_saml_cert:     "{{ vault_sonarqube_saml_cert }}"
+
+# ─────────────────────────────────────────────────────────────
+# GitLab CE
+# ─────────────────────────────────────────────────────────────
+gitlab_hostname:         "gitlab.{{ domain_public }}"
+gitlab_host_ip:          192.168.4.14
+gitlab_image:            gitlab/gitlab-ce:latest
+gitlab_config_path:      /srv/gitlab/config
+gitlab_data_path:        /srv/gitlab/data
+gitlab_logs_path:        /srv/gitlab/logs
+gitlab_root_password:    "{{ vault_gitlab_root_password }}"
+gitlab_oidc_client_id:   "{{ vault_gitlab_oidc_client_id }}"
+gitlab_oidc_client_secret: "{{ vault_gitlab_oidc_client_secret }}"
+gitlab_network:          gitlab-net
+gitlab_subnet:           172.26.0.0/16

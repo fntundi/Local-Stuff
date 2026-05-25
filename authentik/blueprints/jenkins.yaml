@@ -1,0 +1,74 @@
+version: 1
+metadata:
+  name: jenkins
+  labels:
+    blueprints.goauthentik.io/description: "Jenkins — OAuth2/OIDC Provider + Application"
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+
+  # ── Access group ──────────────────────────────────────────────────────────
+  - id: jenkins-group
+    model: authentik_core.group
+    state: present
+    identifiers:
+      name: jenkins-users
+    attrs:
+      name: jenkins-users
+
+  # ── OAuth2/OpenID Provider ────────────────────────────────────────────────
+  - id: jenkins-provider
+    model: authentik_providers_oauth2.oauth2provider
+    state: present
+    identifiers:
+      name: Jenkins
+    attrs:
+      name: Jenkins
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-invalidation-flow]]
+      client_type: confidential
+      redirect_uris: "https://leeeroyy.blackiechan.net/securityRealm/finishLogin"
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+      sub_mode: hashed_user_id
+      include_claims_in_id_token: true
+      access_token_validity: minutes=5
+      refresh_token_validity: days=30
+
+  # ── Application ───────────────────────────────────────────────────────────
+  - id: jenkins-app
+    model: authentik_core.application
+    state: present
+    identifiers:
+      slug: jenkins
+    attrs:
+      name: Jenkins
+      slug: jenkins
+      provider: !KeyOf jenkins-provider
+      meta_description: "Jenkins CI/CD server"
+      meta_publisher: "Home Platform"
+      open_in_new_tab: false
+      policy_engine_mode: any
+
+  # ── Policy binding — restrict access to jenkins-users group ───────────────
+  - model: authentik_policies_event_matcher.eventmatcherpolicy
+    state: absent
+    identifiers:
+      name: jenkins-group-binding    # remove stale bindings on re-apply
+
+  - id: jenkins-group-binding
+    model: authentik_core.policybinding
+    state: present
+    identifiers:
+      order: 10
+      target: !KeyOf jenkins-app
+      group: !KeyOf jenkins-group
+    attrs:
+      order: 10
+      target: !KeyOf jenkins-app
+      group: !KeyOf jenkins-group
+      enabled: true
+      negate: false
+      timeout: 30

@@ -1,0 +1,8 @@
+---
+- name: Deploy GitLab CE
+  hosts: gitlab_servers
+  become: true
+  roles:
+    - common
+    - docker
+    - gitlab

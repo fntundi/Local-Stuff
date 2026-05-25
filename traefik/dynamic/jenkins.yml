@@ -1,6 +1,7 @@
 # Traefik Dynamic Config — Jenkins CI/CD
 # Jenkins runs on jenkins-server (192.168.1.111:8080), separate host from home-server.
 # Traefik routes from the home-server to Jenkins over the LAN.
+# No forward-auth middleware — Jenkins handles its own authentication via Authentik OIDC (oic-auth plugin).
 
 http:
   routers:

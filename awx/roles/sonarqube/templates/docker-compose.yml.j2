@@ -18,6 +18,8 @@ services:
     depends_on:
       - db
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       SONAR_JDBC_URL: jdbc:postgresql://db:5432/${SONARQUBE_DB_NAME}
       SONAR_JDBC_USERNAME: ${SONARQUBE_DB_USER}

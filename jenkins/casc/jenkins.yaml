@@ -6,6 +6,42 @@ jenkins:
   numExecutors: 0
   mode: EXCLUSIVE
 
+  securityRealm:
+    oic:
+      clientId: "${JENKINS_OIDC_CLIENT_ID}"
+      clientSecret: "${JENKINS_OIDC_CLIENT_SECRET}"
+      wellKnownOpenIDConfigurationUrl: "${JENKINS_OIDC_WELL_KNOWN_URL}"
+      scopes: "openid profile email"
+      userNameField: "preferred_username"
+      fullNameFieldName: "name"
+      emailFieldName: "email"
+      groupsFieldName: "groups"
+      disableSslVerification: false
+      logoutFromOpenidProvider: true
+      postLogoutRedirectUrl: "https://authentik.blackiechan.net/application/o/jenkins/end-session/"
+
+  authorizationStrategy:
+    roleBased:
+      roles:
+        global:
+          - name: "admin"
+            description: "Jenkins administrators"
+            permissions:
+              - "Overall/Administer"
+            entries:
+              - group: "jenkins-admins"
+          - name: "developer"
+            description: "Platform developers — build and view access"
+            permissions:
+              - "Overall/Read"
+              - "Job/Build"
+              - "Job/Cancel"
+              - "Job/Read"
+              - "Job/Workspace"
+              - "View/Read"
+            entries:
+              - group: "jenkins-users"
+
   globalNodeProperties:
     - envVars:
         env:
@@ -124,4 +160,5 @@ unclassified:
 # pipeline-stage-view, git, docker-workflow, docker-plugin, sonar,
 # htmlpublisher, junit, build-monitor-plugin, dashboard-view,
 # cloudbees-folder, credentials-binding, timestamper, ansicolor,
+# oic-auth, role-strategy,
 # email-ext, slack (optional)

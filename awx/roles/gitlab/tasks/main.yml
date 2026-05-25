@@ -1,0 +1,79 @@
+---
+- name: Create GitLab workdir
+  ansible.builtin.file:
+    path: "{{ gitlab_workdir }}"
+    state: directory
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0755"
+
+- name: Create GitLab data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "998"
+    group: "998"
+    mode: "0755"
+  loop:
+    - "{{ gitlab_config_path }}"
+    - "{{ gitlab_data_path }}"
+    - "{{ gitlab_logs_path }}"
+
+- name: Inject /etc/hosts entries for blackiechan.net platform services
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "^{{ platform_home_server_ip }}\\s+{{ item }}"
+    line: "{{ platform_home_server_ip }} {{ item }}"
+    state: present
+  loop:
+    - authentik.blackiechan.net
+    - traefik.blackiechan.net
+    - minio.blackiechan.net
+    - registry.blackiechan.net
+    - gitlab.blackiechan.net
+    - sonarqube.blackiechan.net
+    - jenkins.blackiechan.net
+
+- name: Render gitlab.rb config from template
+  ansible.builtin.template:
+    src: gitlab.rb.j2
+    dest: "{{ gitlab_config_path }}/gitlab.rb"
+    owner: "998"
+    group: "998"
+    mode: "0600"
+
+- name: Render GitLab compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ gitlab_workdir }}/docker-compose.yml"
+    owner: "{{ platform_user }}"
+    group: "{{ platform_group | default(platform_user) }}"
+    mode: "0644"
+
+- name: Create GitLab network
+  community.docker.docker_network:
+    name: "{{ gitlab_network }}"
+    driver: bridge
+    ipam_config:
+      - subnet: "{{ gitlab_subnet }}"
+    state: present
+
+- name: Start GitLab stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ gitlab_workdir }}"
+    project_name: "{{ gitlab_project_name }}"
+    files:
+      - docker-compose.yml
+    state: present
+    pull: missing
+  become_user: "{{ platform_user }}"
+
+- name: Wait for GitLab to become healthy
+  ansible.builtin.uri:
+    url: "http://localhost:{{ gitlab_http_port }}/-/readiness"
+    status_code: [200, 302]
+    timeout: 10
+  register: gitlab_ready
+  retries: 36
+  delay: 10
+  until: gitlab_ready.status in [200, 302]

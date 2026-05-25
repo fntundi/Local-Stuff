@@ -13,4 +13,13 @@ sonarqube_data_dir: "{{ platform_data_root }}/sonarqube/data"
 sonarqube_extensions_dir: "{{ platform_data_root }}/sonarqube/extensions"
 sonarqube_logs_dir: "{{ platform_data_root }}/sonarqube/logs"
 sonarqube_network: sonarqube-net
+sonarqube_subnet: 172.25.0.0/16
 sonarqube_vm_max_map_count: 524288
+sonarqube_hostname: "sonarqube.{{ domain_public | default('blackiechan.net') }}"
+# Authentik SAML
+sonarqube_saml_enabled:         true
+sonarqube_saml_provider_name:   "Authentik"
+sonarqube_saml_idp_entity_id:   "https://{{ authentik_host | default('authentik.blackiechan.net') }}"
+sonarqube_saml_idp_sso_url:     "https://{{ authentik_host | default('authentik.blackiechan.net') }}/application/saml/sonarqube/sso/binding/redirect/"
+sonarqube_saml_sp_entity_id:    "https://{{ sonarqube_hostname }}"
+sonarqube_saml_cert:            "{{ vault_sonarqube_saml_cert }}"

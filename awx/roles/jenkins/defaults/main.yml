@@ -32,3 +32,7 @@ jenkins_home_dir: "{{ platform_data_root }}/jenkins/home"
 jenkins_network: "jenkins-net"
 jenkins_subnet: "172.24.0.0/16"
 jenkins_source_casc_dir: "{{ platform_repo_root }}/jenkins/casc"
+# Authentik OIDC — populated from all.yml / vault
+jenkins_oidc_client_id:      "{{ vault_jenkins_oidc_client_id }}"
+jenkins_oidc_client_secret:  "{{ vault_jenkins_oidc_client_secret }}"
+jenkins_oidc_well_known_url: "https://{{ authentik_host | default('authentik.blackiechan.net') }}/application/o/jenkins/.well-known/openid-configuration"

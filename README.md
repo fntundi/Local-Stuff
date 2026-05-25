@@ -1,170 +1,282 @@
 # Home Platform
 
-Infrastructure hub for a self-hosted home automation and AI platform. This repository owns the shared CI/CD pipelines, Traefik gateway configuration, and Ansible/AWX automation. The three application stacks are included as git submodules.
+Infrastructure-as-code for a self-hosted home automation and development platform.
+All application infrastructure is deployed and managed by **AWX**. **Jenkins** handles
+application-level CI/CD (build, test, and Kubernetes deploy). Identity for every service
+is federated through **Authentik**.
+
+---
+
+## Architecture
+
+```
+Internet
+    │  HTTPS / Let's Encrypt
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     home-server  (172.20.0.0/16 home-net)   │
+│                                                             │
+│  Traefik ──► Authentik (SSO)                                │
+│           ├─► AWX (autoans.blackiechan.net)                 │
+│           ├─► HomeCam k3d (homecam.blackiechan.net)         │
+│           ├─► AI Platform compose (chat/api/lab/mlflow/…)   │
+│           └─► Sentinel-Home k3d (sentinel.blackiechan.net)  │
+└─────────────────────────────────────────────────────────────┘
+
+LAN-attached Ubuntu VMs (reach home-server via blackiechan.net or LAN IP)
+  ├── sonarqube-server  192.168.1.110  sonarqube.blackiechan.net
+  ├── jenkins-server    192.168.1.111  leeeroyy.blackiechan.net
+  ├── jenkins-runner    192.168.1.112  (agent, no public hostname)
+  └── gitlab-server     192.168.4.14   gitlab.blackiechan.net
+```
+
+### Deployment responsibility split
+
+| Layer | Tool | What it does |
+|---|---|---|
+| Infrastructure | **AWX** | Provision VMs, install Docker/k3d, deploy all service stacks |
+| Application CI/CD | **Jenkins** | Build images, run tests, `kubectl apply` to k3d clusters |
+| Identity | **Authentik** | SSO for every service (OIDC, SAML, or forward-auth proxy) |
+| Routing / TLS | **Traefik** | Reverse proxy, Let's Encrypt certs, rate limiting, security headers |
+
+---
+
+## Services
+
+### Home Server (Docker host — `home-net` 172.20.0.0/16)
+
+| Service | URL | Auth | Notes |
+|---|---|---|---|
+| **Traefik** | `traefik.blackiechan.net` | htpasswd | Reverse proxy + TLS termination |
+| **Authentik** | `authentik.blackiechan.net` | native | SSO identity provider |
+| **AWX** | `autoans.blackiechan.net` | Authentik forward-auth | Ansible automation |
+| **HomeCam** | `homecam.blackiechan.net` | Authentik forward-auth | Camera NOC — Go backend + React frontend, k3d |
+| **AI Platform** | `chat.blackiechan.net` + 9 sub-domains | Authentik forward-auth | Ollama, OpenWebUI, LiteLLM, MLflow, Qdrant, Langfuse, MinIO, JupyterLab, Activepieces, Portainer |
+| **Sentinel-Home** | `sentinel.blackiechan.net` | Authentik forward-auth | Home security platform — k3d (in development) |
+
+### Isolated Ubuntu VMs (LAN-attached, connected via `blackiechan.net` domain)
+
+| Service | URL | Auth | Host IP |
+|---|---|---|---|
+| **Jenkins** | `leeeroyy.blackiechan.net` | Authentik OIDC (`oic-auth` plugin) | 192.168.1.111 |
+| **SonarQube** | `sonarqube.blackiechan.net` | Authentik SAML | 192.168.1.110 |
+| **GitLab CE** | `gitlab.blackiechan.net` | Authentik OIDC (omniauth) | 192.168.4.14 |
+
+> All VM-hosted services have `/etc/hosts` entries injected by AWX so that every
+> `blackiechan.net` hostname resolves to the home-server LAN IP. This provides full
+> inter-service connectivity (e.g., Jenkins → Authentik, Jenkins → MinIO, Jenkins → SonarQube)
+> without requiring public DNS on the LAN.
+
+---
 
 ## Repository Layout
 
 ```
-Local-Stuff/  (this repo)
-├── awx/                    Ansible automation — AWX deployment, playbooks, roles
-├── jenkins/                Shared CI/CD pipelines for all three apps
-├── traefik/                Traefik v3 reverse proxy gateway
-├── homecam/                submodule → github.com/fntundi/HomeCam
-├── local-aistack/          submodule → github.com/fntundi/local-aistack
-└── Sentinel-Home/          submodule → github.com/fntundi/Sentinel-Home
+Local-Stuff/
+├── traefik/                  Traefik v3 — static config + dynamic routing per app
+│   ├── traefik.yml           Static: entryPoints, ACME resolvers, logging
+│   ├── docker-compose.yml    Stack: traefik + whoami (health test)
+│   └── dynamic/              One .yml per service (authentik, awx, gitlab, homecam,
+│                             jenkins, local-aistack, sentinel-home, sonarqube)
+│
+├── authentik/                Authentik SSO identity provider
+│   ├── docker-compose.yml    Stack: postgresql + server + worker
+│   ├── .env.example          Required secrets — copy to .env before deploying
+│   └── blueprints/           Authentik Blueprint YAML — one per integrated application
+│       ├── homecam.yaml          Proxy provider (Traefik forward-auth)
+│       ├── local-aistack.yaml    Proxy provider (Traefik forward-auth)
+│       ├── sentinel-home.yaml    Proxy provider (Traefik forward-auth)
+│       ├── jenkins.yaml          OAuth2/OIDC provider
+│       ├── gitlab.yaml           OAuth2/OIDC provider
+│       └── sonarqube.yaml        SAML provider
+│
+├── awx/                      AWX — all infrastructure automation
+│   ├── docker-compose.yml    Stack: awx-web, task, postgres, redis, receptor
+│   ├── .env.example          Required secrets — copy to .env before deploying
+│   ├── inventory/
+│   │   ├── hosts.yml             All managed hosts (home-server + 4 CI VMs)
+│   │   └── group_vars/all.yml    SINGLE SOURCE OF TRUTH for all platform variables
+│   ├── playbooks/
+│   │   ├── infra/                OS hardening + Docker + k3d tools (3 playbooks)
+│   │   ├── platform/             Deploy Traefik, Authentik, app stacks (7 playbooks)
+│   │   ├── ci/                   Deploy Jenkins, runner, SonarQube, GitLab (5 playbooks)
+│   │   └── ops/                  Health check, backup, maintenance, models (7 playbooks)
+│   ├── roles/                14 Ansible roles (see awx/README.md for full list)
+│   ├── execution-environments/  3 container images used by AWX jobs
+│   │   ├── base-ee/          OS provisioning (no Docker socket needed)
+│   │   ├── docker-ee/        Docker Compose deployments
+│   │   └── k8s-ee/           Kubernetes + k3d + Helm deployments
+│   └── awx_config/
+│       └── configure_awx.yml    AWX-as-code: idempotent setup of all AWX objects
+│
+├── jenkins/                  Jenkins CI/CD definitions
+│   ├── casc/jenkins.yaml     JCasC: Authentik OIDC realm, role-strategy, credentials,
+│   │                         SonarQube server, shared library, views
+│   ├── job-dsl/seed.groovy   Seed job — creates all folders and pipeline jobs
+│   ├── shared-library/vars/  6 pipeline functions: sonarScan, zapScan, playwright508,
+│   │                         buildSummary, publishToMinio, deployApp
+│   └── pipelines/            Jenkinsfiles per app × component
+│       ├── homecam/           frontend/, backend/, deploy/
+│       ├── local-aistack/     frontend/, backend/, deploy/
+│       └── sentinel-home/     frontend/, backend/, deploy/
+│
+├── HomeCam/                  [submodule] fntundi/HomeCam
+├── local-aistack/            [submodule] fntundi/local-aistack
+└── sentinel-home/            [submodule] fntundi/Sentinel-Home
 ```
-
-## Submodules
-
-### homecam — Sentinel NOC Camera Platform
-
-Security camera network-operations-center built on Go and React.
-
-- **Backend**: Go 1.21 / Gin — REST API, JWT + TOTP 2FA, MongoDB, RTSP stream management
-- **Frontend**: React 19 / craco / Tailwind CSS — live camera grid, role-based access control
-- **Streaming**: MediaMTX — RTSP ingestion → HLS output, ONVIF camera discovery
-- **Deployment**: Docker Compose (dev/prod overlays) or k3d cluster `sentinel-noc`
-- **Namespace**: `sentinel-noc` | **Ports**: backend `:8001`, HLS `:8888`, RTSP `:8554`
-- **Key make targets**: `make up`, `make dev`, `make k3d-create`, `make k8s-deploy`
-
-### local-aistack — Hybrid AI Platform
-
-Production-aligned self-hosted AI stack optimised for CPU-only home servers.
-
-- **LLM inference**: dual Ollama instances (`ollama-chat`, `ollama-dev`) — phi3, nomic-embed-text
-- **Gateway / proxy**: LiteLLM `:4000` — provider-agnostic model routing and rate limiting
-- **UI**: OpenWebUI `:3000` — full-featured chat interface
-- **Notebooks**: JupyterLab `:8888` with scipy stack and platform data mounts
-- **Experiment tracking**: MLflow `:5000` backed by PostgreSQL + MinIO (S3-compatible)
-- **Observability**: Langfuse `:3100` (LLM traces), OpenSearch Dashboards `:5601`
-- **Automation**: Activepieces `:8080` — no-code workflow automation
-- **Vector search**: Qdrant `:6333`
-- **Custom services**: api-server, code-executor (sandboxed), workflows-runner, general-mcp
-- **Infra**: PostgreSQL 16, Redis 7, MinIO — all on `ai-net` (172.22.0.0/16)
-- **Deployment**: Docker Compose prod overlay or k3d cluster `ai-platform`
-- **Key make targets**: `make up`, `make health`, `make models`, `make backup`
-
-### Sentinel-Home *(in development)*
-
-Future home-security application. Stack not yet defined; skeleton CI pipelines and Traefik routing are in place. Sentinel-Home becomes active once `Sentinel-Home/` submodule content is committed.
 
 ---
 
-## Infrastructure Components
-
-### Traefik Gateway (`traefik/`)
-
-Traefik v3.1 reverse proxy that fronts all applications on a shared `home-net` bridge network.
-
-- **Entry points**: HTTP `:80` (→ HTTPS redirect), HTTPS `:443`, RTSP TCP `:8554`
-- **TLS**: self-signed via file provider (swap for ACME/Let's Encrypt for public domains)
-- **Dynamic config**: `traefik/dynamic/` — one file per app with routers, services, middlewares
-- **Dashbard**: `https://traefik.home` (basic auth via `TRAEFIK_DASHBOARD_USERS`)
-
-Start first — it creates the shared `home-net` Docker network:
-
-```bash
-docker compose --project-name traefik-gw --file traefik/docker-compose.yml up -d
-```
-
-### Authentik SSO (`traefik/`)
-
-Authentik runs alongside Traefik as the shared identity provider for the gatewayed applications.
-
-- **Host**: `https://auth.home`
-- **Bootstrap**: initial setup is still available on `http://127.0.0.1:9000/if/flow/initial-setup/`
-- **Wiring**: Traefik uses a shared forward-auth middleware so app routes can require Authentik before they reach the upstream service
-
-### Jenkins CI/CD (`jenkins/`)
-
-Declarative pipelines for all three apps, sharing a common library.
-
-- **9 Jenkinsfiles**: frontend, backend, deploy × 3 apps
-- **Shared library** (`jenkins/shared-library/vars/`): `deployApp`, `sonarScan`, `zapScan`, `playwright508`, `buildSummary`, `publishToMinio`
-- **Artifact storage**: every build uploads to MinIO at `{bucket}/{app}/{component}/{date}/{build#}/{type}/`
-- **Reports**: dark-theme HTML dashboard aggregating ZAP DAST, SonarQube, 508 accessibility, and test results
-- **Bootstrap**: 3-step guide in [jenkins/README.md](jenkins/README.md)
-
-### AWX Automation (`awx/`)
-
-Ansible automation platform (AWX community edition) for provisioning and operating the host server.
-
-- **Centralized variables**: `awx/inventory/group_vars/all.yml` — single source of truth for all port assignments, network names, domain names, data-directory UIDs, cluster names, and secret references
-- **3 Execution Environments**: `base-ee`, `docker-ee`, `k8s-ee`
-- **13 Job Templates**: Infra (provision, docker, k3d) + Deploy (per-app + full-stack) + Ops (health, backup, maintenance, update, models)
-- **Workflows**: Bootstrap Host, Full Stack Deploy
-- **Schedules**: health check every 15 min, daily backup, weekly maintenance
-- **AWX as code**: `awx/awx_config/configure_awx.yml` provisions all AWX objects idempotently
-
----
-
-## Getting Started
+## Deployment Guide
 
 ### Prerequisites
 
-A Linux host (Ubuntu 22.04+ recommended) with:
-- SSH access as a sudoer
-- `~/.ssh/id_ed25519` for git operations
+- Ubuntu 22.04 home server with a static or DDNS public IP
+- DNS A-records: all `*.blackiechan.net` subdomains → home-server public IP
+- SSH key `~/.ssh/id_ed25519` with access to all managed hosts
+- Python 3 + `pip install awxkit` on the control machine
 
-### 1 — Clone
+### Step 1 — Clone with submodules
 
 ```bash
 git clone --recurse-submodules git@github.com:fntundi/Local-Stuff.git
 cd Local-Stuff
 ```
 
-### 2 — Deploy AWX
+### Step 2 — Deploy AWX (manual, one time)
+
+AWX bootstraps everything else. Run this on the home-server:
 
 ```bash
 cd awx
-cp .env.example .env   # fill in secrets
+cp .env.example .env          # fill in: AWX_ADMIN_PASSWORD, POSTGRES_PASSWORD,
+                              #          SECRET_KEY (generate with: openssl rand -hex 32)
 docker compose up -d
+# Wait ~2 min, then open http://<home-server-ip>:8052
 ```
 
-See [awx/README.md](awx/README.md) for the full bootstrap sequence.
-
-### 3 — Run Bootstrap Workflow
-
-In AWX UI → **Templates → Bootstrap Host → Launch**
-
-This provisions the server (user, SSH, firewall), installs Docker, and installs k3d tools.
-
-### 4 — Deploy the Full Stack
-
-In AWX UI → **Templates → Full Stack Deploy → Launch**
-
-Or run playbooks directly:
+### Step 3 — Apply AWX configuration as code
 
 ```bash
-ansible-playbook awx/playbooks/platform/00_deploy_all.yml \
-  -i awx/inventory/hosts.yml
+ansible-playbook awx/awx_config/configure_awx.yml \
+  -e "awx_host=http://localhost:8052" \
+  -e "awx_username=admin" \
+  -e "awx_password=<AWX_ADMIN_PASSWORD>"
 ```
 
-### Local `/etc/hosts`
+This creates the **Home Platform Vault** credential type with all secret fields.
+Open **AWX UI → Credentials → Home Platform Vault** and fill in every `vault_*` value.
+(The Authentik OIDC client secrets for Jenkins/GitLab are filled in after Step 7.)
 
+### Step 4 — Build execution environments
+
+Run on the home-server (requires `ansible-builder`):
+
+```bash
+cd awx
+bash awx_config/build_execution_environments.sh
 ```
-127.0.0.1  homecam.home
-127.0.0.1  aistack.home jupyter.aistack.home mlflow.aistack.home
-127.0.0.1  minio.aistack.home litellm.aistack.home portainer.aistack.home
-127.0.0.1  langfuse.aistack.home opensearch.aistack.home auth.home
-127.0.0.1  sentinel.home traefik.home
+
+### Step 5 — Bootstrap the home-server host
+
+In AWX, navigate to **Templates → Workflows → Bootstrap Host**.
+Set the limit to `home_servers` and launch. This runs:
+`01 Provision Server → 02 Install Docker → 03 Install k3d Tools`
+
+### Step 6 — Deploy the platform stack
+
+Run **Workflows → Full Stack Deploy** (limit: `platform`).
+
+Deployment order enforced by workflow:
 ```
+Traefik (creates home-net)
+    └─► Authentik
+            ├─► HomeCam
+            ├─► AI Platform
+            └─► Sentinel-Home
+```
+
+### Step 7 — Import Authentik blueprints
+
+Open `https://authentik.blackiechan.net` → **System → Blueprints → Import**.
+
+Import each file from `authentik/blueprints/` in this order:
+1. `homecam.yaml`, `local-aistack.yaml`, `sentinel-home.yaml` (proxy providers)
+2. `jenkins.yaml`, `gitlab.yaml` (OIDC providers)
+3. `sonarqube.yaml` (SAML provider)
+
+After importing `jenkins.yaml` and `gitlab.yaml`, go to each application in Authentik,
+open the provider, and **copy the Client ID and Client Secret**. Paste them into the
+AWX vault credential (`vault_jenkins_oidc_client_id` / `vault_jenkins_oidc_client_secret`,
+and the GitLab equivalents).
+
+For `sonarqube.yaml`: copy the **Signing Certificate** from the SAML provider
+into `vault_sonarqube_saml_cert`.
+
+### Step 8 — Deploy CI services (Jenkins, SonarQube, GitLab)
+
+Each CI service runs on its own Ubuntu VM. Use the dedicated AWX bootstrap workflows.
+Each workflow runs: `01 Provision Host → 02 Install Docker → 03 Deploy`.
+
+| Workflow | Limit | Deploys |
+|---|---|---|
+| **Bootstrap Jenkins** | `jenkins_servers` | Jenkins with Authentik OIDC |
+| **Bootstrap Jenkins Runner** *(manual steps)* | `jenkins_runners` | SSH build agent |
+| **Bootstrap SonarQube** | `sonarqube_servers` | SonarQube with Authentik SAML |
+| **Bootstrap GitLab** | `gitlab_servers` | GitLab CE with Authentik OIDC |
+
+> Before running Bootstrap Jenkins: ensure the AWX vault has valid
+> `vault_jenkins_oidc_client_id` and `vault_jenkins_oidc_client_secret` values
+> (copied in Step 7). The AWX role injects these into Jenkins JCasC at deploy time.
+
+### Step 9 — Seed Jenkins jobs
+
+1. Log into `https://leeeroyy.blackiechan.net` via Authentik
+2. Run the **Seed Job** (pre-created by JCasC)
+3. All pipeline folders and jobs are created from `jenkins/job-dsl/seed.groovy`
 
 ---
 
-## Updating Submodules
+## Authentik SSO Integration Reference
+
+| App | Protocol | Group required | How it works |
+|---|---|---|---|
+| AWX | Forward-auth proxy | *(any authenticated user)* | Traefik calls Authentik outpost before forwarding |
+| HomeCam | Forward-auth proxy | `homecam-users` | Same — blueprint policy restricts to group |
+| AI Platform | Forward-auth proxy | `aistack-users` | Same |
+| Sentinel-Home | Forward-auth proxy | *(any authenticated user)* | Same |
+| **Jenkins** | **OIDC** | `jenkins-users` / `jenkins-admins` | `oic-auth` plugin; groups map to role-strategy roles |
+| **GitLab** | **OIDC** | `gitlab-users` | omniauth `openid_connect`; auto-links on first login |
+| **SonarQube** | **SAML** | `sonarqube-users` | Built-in SAML auth; group attribute `groups` maps to SonarQube groups |
+
+---
+
+## Day-2 Operations
+
+Scheduled jobs in AWX:
+
+| Schedule | Job | Action |
+|---|---|---|
+| Every 15 min | **Ops \| Health Check** | HTTP probe every service; logs failures |
+| Daily 02:00 | **Ops \| Backup All** | `pg_dump` + `mongodump` → MinIO; 30-day retention |
+| Sunday 03:00 | **Ops \| Maintenance** | `docker system prune`, log rotation |
+
+Ad-hoc AWX jobs:
+- **Ops \| Update Platform** — pull latest images + rolling restart
+- **Ops \| Manage Ollama Models** — pull / list / delete Ollama models
+- **Ops \| Manage Authentik** — blueprint sync, password rotation
+
+---
+
+## Submodules
+
+| Path | Repo | Description |
+|---|---|---|
+| `HomeCam/` | fntundi/HomeCam | Camera NOC — Go backend (Gin), React 19 frontend. Deployed to k3d cluster `sentinel-noc` via Jenkins deploy pipeline. NodePorts 31100 (HTTP) / 31101 (API). |
+| `local-aistack/` | fntundi/local-aistack | Hybrid AI platform — 35+ services including Ollama, OpenWebUI, LiteLLM, MLflow, Qdrant, Langfuse, MinIO, JupyterLab, Activepieces, Portainer. Docker Compose on home-server. |
+| `sentinel-home/` | fntundi/Sentinel-Home | Home security platform (in development). k3d cluster `sentinel-home`. NodePorts 31000 (HTTP) / 31001 (API). |
 
 ```bash
-# Pull latest for all submodules
+# Update all submodules to latest remote HEAD
 git submodule update --remote --merge
-
-# Pull latest for one submodule
-git submodule update --remote --merge local-aistack
-```
-
-After updating, commit the new submodule pointer:
-
-```bash
-git add local-aistack
-git commit -m "chore: bump local-aistack to latest"
 ```
