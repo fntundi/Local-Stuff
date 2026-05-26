@@ -380,51 +380,73 @@ authentik-setup: ## Create blackie-chan platform admin + all service groups in A
 	set -a; . "$(REPO)/.env"; set +a
 	AURL="http://localhost:9000"
 	echo -e "$(CC)▶  Authentik — user and group provisioning$(CX)"
-	echo -n "  Waiting for Authentik API..."
-	for i in $$(seq 1 40); do
-	    curl -sf --max-time 3 "$$AURL/api/v3/core/users/" \
-	        -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" -o /dev/null 2>/dev/null \
-	        && { echo " ready"; break; }
-	    [ $$i -eq 40 ] && { echo " timeout"; exit 1; }
+	[ -n "$$AUTHENTIK_BOOTSTRAP_TOKEN" ] || { echo -e "  $(CR)ERROR$(CX)  AUTHENTIK_BOOTSTRAP_TOKEN is empty — run 'make gen-secrets'"; exit 1; }
+	echo -e "  Using bootstrap token: $$(echo $$AUTHENTIK_BOOTSTRAP_TOKEN | cut -c1-8)..."
+	echo -e "  Waiting for Authentik API + bootstrap token (up to 3 min)..."
+	for i in $$(seq 1 60); do
+	    HTTP=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+	        "$$AURL/api/v3/core/users/" \
+	        -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" 2>/dev/null || echo "000")
+	    if [ "$$HTTP" = "200" ]; then
+	        echo -e "  $(CG)OK$(CX)    API authenticated (attempt $$i/60)"
+	        break
+	    fi
+	    printf "  [%2d/60] /api/v3/core/users/ → HTTP %s\n" "$$i" "$$HTTP"
+	    if [ $$i -eq 60 ]; then
+	        echo -e "  $(CR)ERROR$(CX)  Authentik API timed out after 3 min (last HTTP $$HTTP)"
+	        echo "  000=connection refused  401=token not set yet  403=token mismatch  5xx=migrations running"
+	        echo "  Recent server logs:"
+	        docker compose -p authentik logs authentik --tail 40 2>/dev/null || true
+	        exit 1
+	    fi
 	    sleep 3
 	done
 	# Create blackie-chan — on 400 (already exists) fall back to a search
-	USER_PK=$$(curl -s -X POST "$$AURL/api/v3/core/users/" \
+	echo -e "  Creating user blackie-chan..."
+	CREATE_RESP=$$(curl -s -X POST "$$AURL/api/v3/core/users/" \
 	    -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
 	    -H "Content-Type: application/json" \
-	    -d '{"username":"blackie-chan","name":"Blackie Chan","is_active":true,"is_superuser":true,"email":"blackie-chan@blackiechan.net","type":"internal"}' \
-	    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('pk',''))" 2>/dev/null || true)
+	    -d '{"username":"blackie-chan","name":"Blackie Chan","is_active":true,"is_superuser":true,"email":"blackie-chan@blackiechan.net","type":"internal"}')
+	echo -e "  Create response: $$CREATE_RESP" | head -c 300
+	echo ""
+	USER_PK=$$(echo "$$CREATE_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('pk',''))" 2>/dev/null || true)
 	if [ -z "$$USER_PK" ]; then
-	    USER_PK=$$(curl -s "$$AURL/api/v3/core/users/?username=blackie-chan" \
-	        -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
+	    echo -e "  User exists or error — searching by username..."
+	    SEARCH_RESP=$$(curl -s "$$AURL/api/v3/core/users/?username=blackie-chan" \
+	        -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN")
+	    echo -e "  Search response: $$SEARCH_RESP" | head -c 300
+	    echo ""
+	    USER_PK=$$(echo "$$SEARCH_RESP" \
 	        | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0]['pk'] if r else '')" 2>/dev/null)
 	fi
 	[ -n "$$USER_PK" ] || { echo -e "  $(CR)ERROR$(CX)  Could not create or locate blackie-chan"; exit 1; }
-	echo -e "  $(CG)OK$(CX)    blackie-chan created (pk=$$USER_PK)"
+	echo -e "  $(CG)OK$(CX)    blackie-chan pk=$$USER_PK"
 	# Set password
-	curl -sf -X POST "$$AURL/api/v3/core/users/$$USER_PK/set_password/" \
+	PW_HTTP=$$(curl -s -o /dev/null -w "%{http_code}" -X POST "$$AURL/api/v3/core/users/$$USER_PK/set_password/" \
 	    -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
 	    -H "Content-Type: application/json" \
-	    -d "{\"password\":\"$$BLACKIE_CHAN_PASSWORD\"}" -o /dev/null
-	echo -e "  $(CG)OK$(CX)    password set"
+	    -d "{\"password\":\"$$BLACKIE_CHAN_PASSWORD\"}")
+	echo -e "  $(CG)OK$(CX)    password set (HTTP $$PW_HTTP)"
 	# Create each service group and add blackie-chan
 	for group in jenkins-admins jenkins-users gitlab-users sonarqube-users homecam-users aistack-users; do
-	    GROUP_PK=$$(curl -s -X POST "$$AURL/api/v3/core/groups/" \
+	    GRP_RESP=$$(curl -s -X POST "$$AURL/api/v3/core/groups/" \
 	        -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
 	        -H "Content-Type: application/json" \
-	        -d "{\"name\":\"$$group\"}" \
-	        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('pk',''))" 2>/dev/null || true)
+	        -d "{\"name\":\"$$group\"}")
+	    GROUP_PK=$$(echo "$$GRP_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('pk',''))" 2>/dev/null || true)
 	    if [ -z "$$GROUP_PK" ]; then
+	        echo -e "  Group $$group exists or error ($$GRP_RESP)" | head -c 200
+	        echo ""
 	        GROUP_PK=$$(curl -s "$$AURL/api/v3/core/groups/?name=$$group" \
 	            -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
 	            | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0]['pk'] if r else '')" 2>/dev/null)
 	    fi
 	    if [ -n "$$GROUP_PK" ]; then
-	        curl -sf -X POST "$$AURL/api/v3/core/groups/$$GROUP_PK/add_user/" \
+	        ADD_HTTP=$$(curl -s -o /dev/null -w "%{http_code}" -X POST "$$AURL/api/v3/core/groups/$$GROUP_PK/add_user/" \
 	            -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
 	            -H "Content-Type: application/json" \
-	            -d "{\"pk\":$$USER_PK}" -o /dev/null
-	        echo -e "  $(CG)OK$(CX)    group $$group — blackie-chan added"
+	            -d "{\"pk\":$$USER_PK}")
+	        echo -e "  $(CG)OK$(CX)    group $$group (pk=$$GROUP_PK) — blackie-chan added (HTTP $$ADD_HTTP)"
 	    else
 	        echo -e "  $(CY)WARN$(CX)  group $$group — could not create or locate"
 	    fi
@@ -476,10 +498,22 @@ authentik: ## Deploy Authentik SSO (requires home-net from Traefik)
 	[ -n "$$AUTHENTIK_PG_PASSWORD" ] || { echo -e "  $(CR)ERROR$(CX)  AUTHENTIK_PG_PASSWORD is empty — run 'make gen-secrets'"; exit 1; }
 	[ -n "$$AUTHENTIK_SECRET_KEY" ]   || { echo -e "  $(CR)ERROR$(CX)  AUTHENTIK_SECRET_KEY is empty — run 'make gen-secrets'"; exit 1; }
 	docker compose --project-name authentik -f authentik/docker-compose.yml up -d
-	echo -n "  Waiting for Authentik health (~60 s)..."
-	for i in $$(seq 1 60); do
-	    curl -sf --connect-timeout 2 http://localhost:9000/-/health/live/ -o /dev/null 2>/dev/null && { echo " ready"; break; }
-	    [ $$i -eq 60 ] && { echo ""; echo -e "  $(CR)Timeout$(CX) — check: docker compose -p authentik logs"; exit 1; }
+	echo -e "  Waiting for Authentik ready (DB migrations + worker — up to 4 min)..."
+	for i in $$(seq 1 80); do
+	    HTTP=$$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 \
+	        http://localhost:9000/-/health/ready/ 2>/dev/null || echo "000")
+	    if [ "$$HTTP" = "200" ]; then
+	        echo -e "  $(CG)OK$(CX)    /-/health/ready/ → 200 (attempt $$i/80)"
+	        break
+	    fi
+	    printf "  [%2d/80] /-/health/ready/ → HTTP %s\n" "$$i" "$$HTTP"
+	    if [ $$i -eq 80 ]; then
+	        echo -e "  $(CR)ERROR$(CX)  Authentik not ready after 240 s — last HTTP $$HTTP"
+	        echo "  000=connection refused  503=migrations running  5xx=worker error"
+	        echo "  Recent logs:"
+	        docker compose -p authentik logs --tail 30 2>/dev/null || true
+	        exit 1
+	    fi
 	    sleep 3
 	done
 
