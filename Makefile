@@ -8,7 +8,7 @@
 .ONESHELL:
 SHELL       := /bin/bash
 
-.PHONY: help preflight submodules envs \
+.PHONY: help preflight gen-secrets submodules envs \
         up down destroy show-credentials \
         traefik traefik-down \
         authentik authentik-down authentik-setup \
@@ -68,24 +68,28 @@ preflight: ## Verify tools + create/validate root .env (auto-generates missing s
 	    && printf "  $(CG)✔$(CX)  %-18s found\n" "ansible-playbook" \
 	    || printf "  $(CY)!$(CX)  %-18s optional (needed for awx-configure)\n" "ansible-playbook"
 	[ "$$missing" -eq 0 ] || { echo -e "\n$(CR)Install missing tools then retry.$(CX)"; exit 1; }
-	echo ""
-	echo -e "$(CB)Generating root .env...$(CX)"
+	$(MAKE) gen-secrets
+
+gen-secrets: ## Generate / fill all secrets in root .env (idempotent — never overwrites existing values)
+	@set -euo pipefail
 	[ -f "$(REPO)/.env" ] || touch "$(REPO)/.env"
-	# Idempotent setter: adds var if absent, fills it in if empty, leaves it alone if set
+	echo -e "$(CB)Generating root .env secrets...$(CX)"
+	# Add var if absent; replace var if its current value is blank or whitespace-only.
+	# Uses [[:space:]]* so it handles trailing spaces and \r (Windows line endings).
 	_s() {
 	    local var="$$1" val="$$2"
 	    if ! grep -q "^$$var=" "$(REPO)/.env" 2>/dev/null; then
 	        printf '%s=%s\n' "$$var" "$$val" >> "$(REPO)/.env"
 	        printf "  $(CG)ADD$(CX)  %s\n" "$$var"
-	    elif grep -q "^$$var=$$" "$(REPO)/.env" 2>/dev/null; then
-	        sed -i "s|^$$var=$$|$$var=$$val|" "$(REPO)/.env"
+	    elif grep -qE "^$$var=[[:space:]]*$$" "$(REPO)/.env" 2>/dev/null; then
+	        sed -i "s|^$$var=.*$$|$$var=$$val|" "$(REPO)/.env"
 	        printf "  $(CG)SET$(CX)  %s\n" "$$var"
 	    fi
 	}
-	h64() { openssl rand -hex 32; }           # 64 hex chars
-	h32() { openssl rand -hex 16; }           # 32 hex chars
-	h40() { openssl rand -hex 20; }           # 40 hex chars
-	p24() { openssl rand -base64 18 | tr -d '\n/+='; }  # 24 alnum chars
+	h64() { openssl rand -hex 32; }
+	h32() { openssl rand -hex 16; }
+	h40() { openssl rand -hex 20; }
+	p24() { openssl rand -base64 18 | tr -d '\n/+='; }
 	# ── Platform
 	_s DOMAIN                           blackiechan.net
 	_s BIND_ADDRESS                     192.168.1.100
@@ -123,8 +127,8 @@ preflight: ## Verify tools + create/validate root .env (auto-generates missing s
 	_s AISTACK_LANGFUSE_NEXTAUTH_SECRET "$$(h32)"
 	_s AISTACK_LANGFUSE_SALT            "$$(h32)"
 	_s AISTACK_LANGFUSE_ENCRYPTION_KEY  "$$(h64)"
-	_s AISTACK_API_AUTH_USERNAME       api-admin
-	_s AISTACK_API_AUTH_PASSWORD       "$$(p24)"
+	_s AISTACK_API_AUTH_USERNAME        api-admin
+	_s AISTACK_API_AUTH_PASSWORD        "$$(p24)"
 	_s AISTACK_API_JWT_SECRET           "$$(h32)"
 	# ── Git / Docker registry (fill in manually when needed)
 	_s GIT_REPO_URL                     git@github.com:fntundi/Local-Stuff.git
@@ -132,7 +136,6 @@ preflight: ## Verify tools + create/validate root .env (auto-generates missing s
 	_s GIT_TOKEN                        ""
 	_s DOCKER_USER                      ""
 	_s DOCKER_PASSWORD                  ""
-	echo ""
 	echo -e "$(CG)root .env ready.$(CX)  Set GIT_USER, GIT_TOKEN, DOCKER_USER/PASSWORD when needed."
 
 submodules: ## Initialise and update all git submodules
@@ -140,9 +143,8 @@ submodules: ## Initialise and update all git submodules
 	git submodule update --init --recursive
 	echo "  Done."
 
-envs: ## Generate local-aistack .env.prod from root .env secrets
+envs: gen-secrets ## Generate all secrets in root .env then produce local-aistack .env.prod
 	@set -euo pipefail
-	[ -f "$(REPO)/.env" ] || { echo -e "$(CR)Run 'make preflight' first$(CX)"; exit 1; }
 	set -a; . "$(REPO)/.env"; set +a
 	if [ ! -d local-aistack ]; then
 	    echo -e "  $(CY)SKIP$(CX)  local-aistack/ not found — run 'make submodules' first"
@@ -320,6 +322,7 @@ authentik-setup: ## Create blackie-chan platform admin + all service groups in A
 traefik: ## Deploy Traefik (creates home-net 172.20.0.0/16, TLS termination)
 	@set -euo pipefail
 	echo -e "$(CC)▶  Traefik$(CX)"
+	set -a; . "$(REPO)/.env"; set +a
 	docker compose --project-name traefik-gw -f traefik/docker-compose.yml up -d
 	echo -n "  Waiting for Traefik..."
 	for i in $$(seq 1 30); do
@@ -335,6 +338,9 @@ authentik: ## Deploy Authentik SSO (requires home-net from Traefik)
 	@set -euo pipefail
 	echo -e "$(CC)▶  Authentik$(CX)"
 	[ -f "$(REPO)/.env" ] || { echo -e "  $(CR)ERROR$(CX)  .env missing — run 'make preflight'"; exit 1; }
+	set -a; . "$(REPO)/.env"; set +a
+	[ -n "$$AUTHENTIK_PG_PASSWORD" ] || { echo -e "  $(CR)ERROR$(CX)  AUTHENTIK_PG_PASSWORD is empty — run 'make gen-secrets'"; exit 1; }
+	[ -n "$$AUTHENTIK_SECRET_KEY" ]   || { echo -e "  $(CR)ERROR$(CX)  AUTHENTIK_SECRET_KEY is empty — run 'make gen-secrets'"; exit 1; }
 	docker compose --project-name authentik -f authentik/docker-compose.yml up -d
 	echo -n "  Waiting for Authentik health (~60 s)..."
 	for i in $$(seq 1 60); do
@@ -350,6 +356,9 @@ awx: ## Deploy AWX automation controller (~2 min startup)
 	@set -euo pipefail
 	echo -e "$(CC)▶  AWX$(CX)"
 	[ -f "$(REPO)/.env" ] || { echo -e "  $(CR)ERROR$(CX)  .env missing — run 'make preflight'"; exit 1; }
+	set -a; . "$(REPO)/.env"; set +a
+	[ -n "$$AWX_ADMIN_PASSWORD" ] || { echo -e "  $(CR)ERROR$(CX)  AWX_ADMIN_PASSWORD is empty — run 'make gen-secrets'"; exit 1; }
+	[ -n "$$AWX_SECRET_KEY" ]     || { echo -e "  $(CR)ERROR$(CX)  AWX_SECRET_KEY is empty — run 'make gen-secrets'"; exit 1; }
 	docker compose --project-name awx -f awx/docker-compose.yml up -d
 	echo -n "  Waiting for AWX API (may take ~2 min)..."
 	for i in $$(seq 1 60); do
