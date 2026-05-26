@@ -142,9 +142,37 @@ gen-secrets: ## Generate / fill all secrets in root .env (idempotent — never o
 	_s DOCKER_PASSWORD                  ""
 	# ── Cloudflare Tunnel (optional — leave blank if not using a tunnel)
 	_s CLOUDFLARE_TUNNEL_TOKEN          ""
+	# ── HomeCam (k3d: sentinel-noc)
+	_s HOMECAM_JWT_SECRET               "$$(h64)"
+	_s HOMECAM_ENCRYPTION_KEY           "$$(h64)"
+	_s HOMECAM_MONGO_PASSWORD           "$$(h32)"
+	# ── Sentinel-Home (k3d: sentinel-home)
+	_s SENTINEL_JWT_SECRET              "$$(h64)"
+	_s SENTINEL_ADMIN_EMAIL             admin@blackiechan.net
+	_s SENTINEL_ADMIN_PASSWORD          "$$(p24)"
+	_s SENTINEL_SETTINGS_ENC_KEY        "$$(h64)"
+	# ── Jenkins CI — static / pre-known values
+	_s JENKINS_MINIO_BUCKET             mlflow
+	_s JENKINS_TRAEFIK_NETWORK          home-net
+	_s JENKINS_DOCKER_REGISTRY          ""
+	_s MINIO_ACCESS_KEY                 minioadmin
+	# ── Jenkins CI — blank until Authentik blueprints are imported
+	_s JENKINS_OIDC_CLIENT_ID           ""
+	_s JENKINS_OIDC_CLIENT_SECRET       ""
+	# ── Jenkins CI — blank until SonarQube is deployed
+	_s SONARQUBE_TOKEN                  ""
+	# ── Jenkins CI kubeconfigs — blank until k8s clusters are ready
+	_s KUBECONFIG_HOMECAM               ""
+	_s KUBECONFIG_AISTACK               ""
+	_s KUBECONFIG_SENTINEL              ""
 	# ── Traefik dashboard htpasswd — derived from TRAEFIK_DASHBOARD_PASSWORD
 	# Source .env so TRAEFIK_DASHBOARD_PASSWORD is in scope for openssl
 	set -a; . "$(REPO)/.env"; set +a
+	# ── Jenkins CI — URL-derived (DOMAIN now in scope from sourced .env)
+	_s JENKINS_OIDC_WELL_KNOWN_URL      "https://authentik.$$DOMAIN/application/o/jenkins/.well-known/openid-configuration"
+	_s JENKINS_SONARQUBE_URL            "https://sonarqube.$$DOMAIN"
+	_s JENKINS_MINIO_ENDPOINT           "https://minio.$$DOMAIN"
+	_s MINIO_SECRET_KEY                 "$$AISTACK_MINIO_ROOT_PASSWORD"
 	# Guard checks for the single-quoted form — catches both absent and previously
 	# written unquoted values (which cause "apr1: unbound variable" on source).
 	if ! grep -q "^TRAEFIK_DASHBOARD_USERS='" "$(REPO)/.env" 2>/dev/null; then
@@ -160,46 +188,87 @@ submodules: ## Initialise and update all git submodules
 	git submodule update --init --recursive
 	echo "  Done."
 
-envs: gen-secrets ## Generate all secrets in root .env then produce local-aistack .env.prod
+envs: gen-secrets ## Generate all secrets in root .env then produce all submodule env files
 	@set -euo pipefail
 	set -a; . "$(REPO)/.env"; set +a
+	# ── local-aistack env.prod
 	if [ ! -d local-aistack ]; then
 	    echo -e "  $(CY)SKIP$(CX)  local-aistack/ not found — run 'make submodules' first"
-	    exit 0
+	else
+	    src="local-aistack/env/.env.prod.example"
+	    dst="local-aistack/env/.env.prod"
+	    if [ -f "$$dst" ] && ! grep -q "change_me" "$$dst" 2>/dev/null; then
+	        echo -e "  $(CY)SKIP$(CX)  $$dst already configured"
+	    else
+	        [ -f "$$src" ] || { echo -e "  $(CR)ERROR$(CX)  $$src not found"; exit 1; }
+	        pg="$$AISTACK_POSTGRES_PASSWORD"
+	        cp "$$src" "$$dst"
+	        # Substitute each secret — values are hex/alphanumeric so | is safe as separator
+	        sed -i "s|^BIND_ADDRESS=.*|BIND_ADDRESS=$$BIND_ADDRESS|"                                               "$$dst"
+	        sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$$pg|"                                               "$$dst"
+	        sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://activepieces_user:$$pg@postgres:5432/activepieces_db|" "$$dst"
+	        sed -i "s|^MLFLOW_BACKEND_STORE_URI=.*|MLFLOW_BACKEND_STORE_URI=postgresql://activepieces_user:$$pg@postgres:5432/activepieces_db|" "$$dst"
+	        sed -i "s|^LITELLM_DATABASE_URL=.*|LITELLM_DATABASE_URL=postgresql://activepieces_user:$$pg@postgres:5432/litellm_db|"             "$$dst"
+	        sed -i "s|^LANGFUSE_DATABASE_URL=.*|LANGFUSE_DATABASE_URL=postgresql://activepieces_user:$$pg@postgres:5432/langfuse_db|"          "$$dst"
+	        sed -i "s|^QDRANT_API_KEY=.*|QDRANT_API_KEY=$$AISTACK_QDRANT_API_KEY|"                                 "$$dst"
+	        sed -i "s|^AP_ENCRYPTION_KEY=.*|AP_ENCRYPTION_KEY=$$AISTACK_AP_ENCRYPTION_KEY|"                        "$$dst"
+	        sed -i "s|^AP_JWT_SECRET=.*|AP_JWT_SECRET=$$AISTACK_AP_JWT_SECRET|"                                    "$$dst"
+	        sed -i "s|^OPENWEBUI_SECRET_KEY=.*|OPENWEBUI_SECRET_KEY=$$AISTACK_OPENWEBUI_SECRET_KEY|"               "$$dst"
+	        sed -i "s|^JUPYTER_TOKEN=.*|JUPYTER_TOKEN=$$AISTACK_JUPYTER_TOKEN|"                                    "$$dst"
+	        sed -i "s|^MINIO_ROOT_PASSWORD=.*|MINIO_ROOT_PASSWORD=$$AISTACK_MINIO_ROOT_PASSWORD|"                  "$$dst"
+	        sed -i "s|^PORTAINER_ADMIN_PASSWORD=.*|PORTAINER_ADMIN_PASSWORD=$$AISTACK_PORTAINER_ADMIN_PASSWORD|"   "$$dst"
+	        sed -i "s|^LITELLM_MASTER_KEY=.*|LITELLM_MASTER_KEY=$$AISTACK_LITELLM_MASTER_KEY|"                    "$$dst"
+	        sed -i "s|^LANGFUSE_PUBLIC_KEY=.*|LANGFUSE_PUBLIC_KEY=$$AISTACK_LANGFUSE_PUBLIC_KEY|"                  "$$dst"
+	        sed -i "s|^LANGFUSE_SECRET_KEY=.*|LANGFUSE_SECRET_KEY=$$AISTACK_LANGFUSE_SECRET_KEY|"                  "$$dst"
+	        sed -i "s|^LANGFUSE_NEXTAUTH_SECRET=.*|LANGFUSE_NEXTAUTH_SECRET=$$AISTACK_LANGFUSE_NEXTAUTH_SECRET|"   "$$dst"
+	        sed -i "s|^LANGFUSE_SALT=.*|LANGFUSE_SALT=$$AISTACK_LANGFUSE_SALT|"                                   "$$dst"
+	        sed -i "s|^LANGFUSE_ENCRYPTION_KEY=.*|LANGFUSE_ENCRYPTION_KEY=$$AISTACK_LANGFUSE_ENCRYPTION_KEY|"      "$$dst"
+	        sed -i "s|^API_AUTH_USERNAME=.*|API_AUTH_USERNAME=$$AISTACK_API_AUTH_USERNAME|"                         "$$dst"
+	        sed -i "s|^API_AUTH_PASSWORD=.*|API_AUTH_PASSWORD=$$AISTACK_API_AUTH_PASSWORD|"                         "$$dst"
+	        sed -i "s|^API_JWT_SECRET=.*|API_JWT_SECRET=$$AISTACK_API_JWT_SECRET|"                                 "$$dst"
+	        echo -e "  $(CG)GEN$(CX)   $$dst"
+	    fi
 	fi
-	src="local-aistack/env/.env.prod.example"
-	dst="local-aistack/env/.env.prod"
-	if [ -f "$$dst" ] && ! grep -q "change_me" "$$dst" 2>/dev/null; then
-	    echo -e "  $(CY)SKIP$(CX)  $$dst already configured"
-	    exit 0
+	# ── HomeCam .env (JWT_SECRET + ENCRYPTION_KEY are :? hard-required in docker-compose)
+	hcenv="HomeCam/.env"
+	if [ ! -d HomeCam ]; then
+	    echo -e "  $(CY)SKIP$(CX)  HomeCam/ not found — run 'make submodules' first"
+	elif [ ! -f "$$hcenv" ] || grep -qE "^(JWT_SECRET|ENCRYPTION_KEY)=[[:space:]]*$$" "$$hcenv" 2>/dev/null; then
+	    printf 'JWT_SECRET=%s\n'                             "$$HOMECAM_JWT_SECRET"      > "$$hcenv"
+	    printf 'ENCRYPTION_KEY=%s\n'                         "$$HOMECAM_ENCRYPTION_KEY"  >> "$$hcenv"
+	    printf 'ENVIRONMENT=production\n'                                                >> "$$hcenv"
+	    printf 'ACCESS_TOKEN_EXPIRE_MINUTES=30\n'                                        >> "$$hcenv"
+	    printf 'REFRESH_TOKEN_EXPIRE_DAYS=7\n'                                           >> "$$hcenv"
+	    printf 'RATE_LIMIT_MAX=100\n'                                                    >> "$$hcenv"
+	    printf 'RATE_LIMIT_WINDOW=60\n'                                                  >> "$$hcenv"
+	    printf 'CORS_ORIGINS=https://homecam.%s\n'               "$$DOMAIN"             >> "$$hcenv"
+	    printf 'REACT_APP_BACKEND_URL=https://homecam.%s/api\n'  "$$DOMAIN"             >> "$$hcenv"
+	    echo -e "  $(CG)GEN$(CX)   $$hcenv"
+	else
+	    echo -e "  $(CY)SKIP$(CX)  $$hcenv already configured"
 	fi
-	[ -f "$$src" ] || { echo -e "  $(CR)ERROR$(CX)  $$src not found"; exit 1; }
-	pg="$$AISTACK_POSTGRES_PASSWORD"
-	cp "$$src" "$$dst"
-	# Substitute each secret — values are hex/alphanumeric so | is safe as separator
-	sed -i "s|^BIND_ADDRESS=.*|BIND_ADDRESS=$$BIND_ADDRESS|"                                               "$$dst"
-	sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$$pg|"                                               "$$dst"
-	sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://activepieces_user:$$pg@postgres:5432/activepieces_db|" "$$dst"
-	sed -i "s|^MLFLOW_BACKEND_STORE_URI=.*|MLFLOW_BACKEND_STORE_URI=postgresql://activepieces_user:$$pg@postgres:5432/activepieces_db|" "$$dst"
-	sed -i "s|^LITELLM_DATABASE_URL=.*|LITELLM_DATABASE_URL=postgresql://activepieces_user:$$pg@postgres:5432/litellm_db|"             "$$dst"
-	sed -i "s|^LANGFUSE_DATABASE_URL=.*|LANGFUSE_DATABASE_URL=postgresql://activepieces_user:$$pg@postgres:5432/langfuse_db|"          "$$dst"
-	sed -i "s|^QDRANT_API_KEY=.*|QDRANT_API_KEY=$$AISTACK_QDRANT_API_KEY|"                                 "$$dst"
-	sed -i "s|^AP_ENCRYPTION_KEY=.*|AP_ENCRYPTION_KEY=$$AISTACK_AP_ENCRYPTION_KEY|"                        "$$dst"
-	sed -i "s|^AP_JWT_SECRET=.*|AP_JWT_SECRET=$$AISTACK_AP_JWT_SECRET|"                                    "$$dst"
-	sed -i "s|^OPENWEBUI_SECRET_KEY=.*|OPENWEBUI_SECRET_KEY=$$AISTACK_OPENWEBUI_SECRET_KEY|"               "$$dst"
-	sed -i "s|^JUPYTER_TOKEN=.*|JUPYTER_TOKEN=$$AISTACK_JUPYTER_TOKEN|"                                    "$$dst"
-	sed -i "s|^MINIO_ROOT_PASSWORD=.*|MINIO_ROOT_PASSWORD=$$AISTACK_MINIO_ROOT_PASSWORD|"                  "$$dst"
-	sed -i "s|^PORTAINER_ADMIN_PASSWORD=.*|PORTAINER_ADMIN_PASSWORD=$$AISTACK_PORTAINER_ADMIN_PASSWORD|"   "$$dst"
-	sed -i "s|^LITELLM_MASTER_KEY=.*|LITELLM_MASTER_KEY=$$AISTACK_LITELLM_MASTER_KEY|"                    "$$dst"
-	sed -i "s|^LANGFUSE_PUBLIC_KEY=.*|LANGFUSE_PUBLIC_KEY=$$AISTACK_LANGFUSE_PUBLIC_KEY|"                  "$$dst"
-	sed -i "s|^LANGFUSE_SECRET_KEY=.*|LANGFUSE_SECRET_KEY=$$AISTACK_LANGFUSE_SECRET_KEY|"                  "$$dst"
-	sed -i "s|^LANGFUSE_NEXTAUTH_SECRET=.*|LANGFUSE_NEXTAUTH_SECRET=$$AISTACK_LANGFUSE_NEXTAUTH_SECRET|"   "$$dst"
-	sed -i "s|^LANGFUSE_SALT=.*|LANGFUSE_SALT=$$AISTACK_LANGFUSE_SALT|"                                   "$$dst"
-	sed -i "s|^LANGFUSE_ENCRYPTION_KEY=.*|LANGFUSE_ENCRYPTION_KEY=$$AISTACK_LANGFUSE_ENCRYPTION_KEY|"      "$$dst"
-	sed -i "s|^API_AUTH_USERNAME=.*|API_AUTH_USERNAME=$$AISTACK_API_AUTH_USERNAME|"                         "$$dst"
-	sed -i "s|^API_AUTH_PASSWORD=.*|API_AUTH_PASSWORD=$$AISTACK_API_AUTH_PASSWORD|"                         "$$dst"
-	sed -i "s|^API_JWT_SECRET=.*|API_JWT_SECRET=$$AISTACK_API_JWT_SECRET|"                                 "$$dst"
-	echo -e "  $(CG)GEN$(CX)   $$dst"
+	# ── sentinel-home .env (overrides insecure docker-compose soft defaults)
+	shenv="sentinel-home/.env"
+	if [ ! -d sentinel-home ]; then
+	    echo -e "  $(CY)SKIP$(CX)  sentinel-home/ not found — run 'make submodules' first"
+	elif [ ! -f "$$shenv" ] || grep -qE "ChangeMe|please-change" "$$shenv" 2>/dev/null; then
+	    printf 'JWT_SECRET=%s\n'       "$$SENTINEL_JWT_SECRET"       > "$$shenv"
+	    printf 'ADMIN_EMAIL=%s\n'      "$$SENTINEL_ADMIN_EMAIL"      >> "$$shenv"
+	    printf 'ADMIN_PASSWORD=%s\n'   "$$SENTINEL_ADMIN_PASSWORD"   >> "$$shenv"
+	    printf 'SETTINGS_ENC_KEY=%s\n' "$$SENTINEL_SETTINGS_ENC_KEY" >> "$$shenv"
+	    echo -e "  $(CG)GEN$(CX)   $$shenv"
+	else
+	    echo -e "  $(CY)SKIP$(CX)  $$shenv already configured"
+	fi
+	# ── authentik/.env — filtered view of root .env for standalone docker compose use
+	grep -E "^(AUTHENTIK_|TZ=)" "$(REPO)/.env" > authentik/.env
+	echo -e "  $(CG)GEN$(CX)   authentik/.env"
+	# ── awx/.env
+	grep -E "^(AWX_|TZ=)" "$(REPO)/.env" > awx/.env
+	echo -e "  $(CG)GEN$(CX)   awx/.env"
+	# ── traefik/.env
+	grep -E "^(TRAEFIK_|TZ=)" "$(REPO)/.env" > traefik/.env
+	echo -e "  $(CG)GEN$(CX)   traefik/.env"
 
 # ─── Full stack ───────────────────────────────────────────────────────────────
 
@@ -260,11 +329,14 @@ show-credentials: ## Print all service URLs and credentials from root .env
 	echo    "  ─────────────────────────────────────────────────────────"
 	echo    "  URL            : https://homecam.$$DOMAIN"
 	echo    "  NodePort (dev) : http://<host>:30080"
+	printf  "  JWT Secret     : $(CG)%s$(CX)\n" "$$HOMECAM_JWT_SECRET"
 	echo ""
 	echo -e "$(CB)  Sentinel-Home$(CX)"
 	echo    "  ─────────────────────────────────────────────────────────"
 	echo    "  URL            : https://sentinel.$$DOMAIN"
 	echo    "  NodePort (dev) : http://<host>:31000"
+	echo    "  Admin email    : $$SENTINEL_ADMIN_EMAIL"
+	printf  "  Admin password : $(CG)%s$(CX)\n" "$$SENTINEL_ADMIN_PASSWORD"
 	echo ""
 	echo -e "$(CB)  CI / DevSecOps$(CX)"
 	echo    "  ─────────────────────────────────────────────────────────"
@@ -423,7 +495,20 @@ homecam: ## Deploy HomeCam NOC to k3d cluster sentinel-noc (creates ai-home-shar
 	@set -euo pipefail
 	echo -e "$(CC)▶  HomeCam (k3d: sentinel-noc)$(CX)"
 	[ -d HomeCam ] || { echo -e "  $(CR)ERROR$(CX)  HomeCam/ missing — run 'make submodules'"; exit 1; }
+	set -a; . "$(REPO)/.env"; set +a
 	$(MAKE) -C HomeCam k8s-up
+	# Override static k8s/secrets.yaml with real secrets from root .env
+	kubectl --context k3d-sentinel-noc create namespace sentinel-noc \
+	    --dry-run=client -o yaml | kubectl --context k3d-sentinel-noc apply -f - 2>/dev/null || true
+	kubectl --context k3d-sentinel-noc create secret generic sentinel-secrets \
+	    --namespace sentinel-noc \
+	    --from-literal=jwt-secret="$$HOMECAM_JWT_SECRET" \
+	    --from-literal=encryption-key="$$HOMECAM_ENCRYPTION_KEY" \
+	    --from-literal=mongo-username="admin" \
+	    --from-literal=mongo-password="$$HOMECAM_MONGO_PASSWORD" \
+	    --dry-run=client -o yaml | kubectl --context k3d-sentinel-noc apply -f -
+	kubectl --context k3d-sentinel-noc rollout restart deployment/backend \
+	    -n sentinel-noc 2>/dev/null || true
 	echo    "  Frontend NodePort : http://<host>:30080"
 	echo    "  API NodePort      : http://<host>:30081"
 
