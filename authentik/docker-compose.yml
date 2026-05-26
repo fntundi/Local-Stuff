@@ -9,8 +9,25 @@
 volumes:
   authentik_database:
   authentik_media:
+  authentik_redis:
 
 services:
+  authentik-redis:
+    image: docker.io/library/redis:7-alpine
+    container_name: authentik-redis
+    restart: unless-stopped
+    command: --save 60 1 --loglevel warning
+    networks:
+      - home-net
+    volumes:
+      - authentik_redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   authentik-postgresql:
     image: postgres:16-alpine
     container_name: authentik-postgresql
@@ -47,9 +64,15 @@ services:
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_PG_PASSWORD:?AUTHENTIK_PG_PASSWORD is required}
+      AUTHENTIK_REDIS__HOST: authentik-redis
       AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:-}
       AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:-}
+      AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:-akadmin@blackiechan.net}
       AUTHENTIK_ERROR_REPORTING__ENABLED: ${AUTHENTIK_ERROR_REPORTING__ENABLED:-false}
+      # Reverse proxy: trust X-Forwarded-For from Traefik on home-net
+      AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS: 172.20.0.0/16
+      # SSO session cookie shared across all *.blackiechan.net subdomains
+      AUTHENTIK_COOKIE__DOMAIN: ${DOMAIN:-blackiechan.net}
       TZ: ${TZ:-America/New_York}
       JENKINS_OIDC_CLIENT_ID: ${JENKINS_OIDC_CLIENT_ID:-}
       JENKINS_OIDC_CLIENT_SECRET: ${JENKINS_OIDC_CLIENT_SECRET:-}
@@ -57,6 +80,8 @@ services:
       GITLAB_OIDC_CLIENT_SECRET: ${GITLAB_OIDC_CLIENT_SECRET:-}
     depends_on:
       authentik-postgresql:
+        condition: service_healthy
+      authentik-redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:9000/-/health/live/\", timeout=5).read()'"]
@@ -81,9 +106,12 @@ services:
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_PG_PASSWORD:?AUTHENTIK_PG_PASSWORD is required}
+      AUTHENTIK_REDIS__HOST: authentik-redis
       AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:-}
       AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:-}
       AUTHENTIK_ERROR_REPORTING__ENABLED: ${AUTHENTIK_ERROR_REPORTING__ENABLED:-false}
+      AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS: 172.20.0.0/16
+      AUTHENTIK_COOKIE__DOMAIN: ${DOMAIN:-blackiechan.net}
       TZ: ${TZ:-America/New_York}
       JENKINS_OIDC_CLIENT_ID: ${JENKINS_OIDC_CLIENT_ID:-}
       JENKINS_OIDC_CLIENT_SECRET: ${JENKINS_OIDC_CLIENT_SECRET:-}
@@ -91,6 +119,8 @@ services:
       GITLAB_OIDC_CLIENT_SECRET: ${GITLAB_OIDC_CLIENT_SECRET:-}
     depends_on:
       authentik-postgresql:
+        condition: service_healthy
+      authentik-redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "ak healthcheck"]

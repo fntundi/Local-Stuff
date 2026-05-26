@@ -100,6 +100,7 @@ gen-secrets: ## Generate / fill all secrets in root .env (idempotent — never o
 	_s AUTHENTIK_PG_PASSWORD            "$$(h32)"
 	_s AUTHENTIK_BOOTSTRAP_PASSWORD     "$$(p24)"
 	_s AUTHENTIK_BOOTSTRAP_TOKEN        "$$(h40)"
+	_s AUTHENTIK_BOOTSTRAP_EMAIL        akadmin@blackiechan.net
 	# ── Authentik optional flags (explicit avoids compose fallback ambiguity)
 	_s AUTHENTIK_ERROR_REPORTING__ENABLED false
 	# ── blackie-chan (platform admin user)
@@ -265,7 +266,7 @@ envs: gen-secrets ## Generate all secrets in root .env then produce all submodul
 	    echo -e "  $(CY)SKIP$(CX)  $$shenv already configured"
 	fi
 	# ── authentik/.env — filtered view of root .env for standalone docker compose use
-	grep -E "^(AUTHENTIK_|JENKINS_OIDC_|GITLAB_OIDC_|TZ=)" "$(REPO)/.env" > authentik/.env
+	grep -E "^(AUTHENTIK_|JENKINS_OIDC_|GITLAB_OIDC_|DOMAIN=|TZ=)" "$(REPO)/.env" > authentik/.env
 	echo -e "  $(CG)GEN$(CX)   authentik/.env"
 	# ── awx/.env
 	grep -E "^(AWX_|TZ=)" "$(REPO)/.env" > awx/.env
@@ -381,6 +382,7 @@ authentik-setup: ## Create blackie-chan platform admin + all service groups in A
 	AURL="http://localhost:9000"
 	echo -e "$(CC)▶  Authentik — user and group provisioning$(CX)"
 	[ -n "$$AUTHENTIK_BOOTSTRAP_TOKEN" ] || { echo -e "  $(CR)ERROR$(CX)  AUTHENTIK_BOOTSTRAP_TOKEN is empty — run 'make gen-secrets'"; exit 1; }
+	[ -n "$$BLACKIE_CHAN_PASSWORD" ]      || { echo -e "  $(CR)ERROR$(CX)  BLACKIE_CHAN_PASSWORD is empty — run 'make gen-secrets'"; exit 1; }
 	echo -e "  Using bootstrap token: $$(echo $$AUTHENTIK_BOOTSTRAP_TOKEN | cut -c1-8)..."
 	echo -e "  Waiting for Authentik API + bootstrap token (up to 3 min)..."
 	for i in $$(seq 1 60); do
@@ -407,17 +409,17 @@ authentik-setup: ## Create blackie-chan platform admin + all service groups in A
 	    -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
 	    -H "Content-Type: application/json" \
 	    -d '{"username":"blackie-chan","name":"Blackie Chan","is_active":true,"is_superuser":true,"email":"blackie-chan@blackiechan.net","type":"internal"}')
-	echo -e "  Create response: $$CREATE_RESP" | head -c 300
+	echo -e "  Create response: $$CREATE_RESP" | head -c 300 || true
 	echo ""
 	USER_PK=$$(echo "$$CREATE_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('pk',''))" 2>/dev/null || true)
 	if [ -z "$$USER_PK" ]; then
 	    echo -e "  User exists or error — searching by username..."
 	    SEARCH_RESP=$$(curl -s "$$AURL/api/v3/core/users/?username=blackie-chan" \
 	        -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN")
-	    echo -e "  Search response: $$SEARCH_RESP" | head -c 300
+	    echo -e "  Search response: $$SEARCH_RESP" | head -c 300 || true
 	    echo ""
 	    USER_PK=$$(echo "$$SEARCH_RESP" \
-	        | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0]['pk'] if r else '')" 2>/dev/null)
+	        | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0]['pk'] if r else '')" 2>/dev/null || true)
 	fi
 	[ -n "$$USER_PK" ] || { echo -e "  $(CR)ERROR$(CX)  Could not create or locate blackie-chan"; exit 1; }
 	echo -e "  $(CG)OK$(CX)    blackie-chan pk=$$USER_PK"
@@ -426,6 +428,8 @@ authentik-setup: ## Create blackie-chan platform admin + all service groups in A
 	    -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
 	    -H "Content-Type: application/json" \
 	    -d "{\"password\":\"$$BLACKIE_CHAN_PASSWORD\"}")
+	[ "$$PW_HTTP" = "204" ] || [ "$$PW_HTTP" = "200" ] \
+	    || { echo -e "  $(CR)ERROR$(CX)  set_password returned HTTP $$PW_HTTP"; exit 1; }
 	echo -e "  $(CG)OK$(CX)    password set (HTTP $$PW_HTTP)"
 	# Create each service group and add blackie-chan
 	for group in jenkins-admins jenkins-users gitlab-users sonarqube-users homecam-users aistack-users; do
@@ -435,17 +439,19 @@ authentik-setup: ## Create blackie-chan platform admin + all service groups in A
 	        -d "{\"name\":\"$$group\"}")
 	    GROUP_PK=$$(echo "$$GRP_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('pk',''))" 2>/dev/null || true)
 	    if [ -z "$$GROUP_PK" ]; then
-	        echo -e "  Group $$group exists or error ($$GRP_RESP)" | head -c 200
+	        echo -e "  Group $$group exists or error ($$GRP_RESP)" | head -c 200 || true
 	        echo ""
 	        GROUP_PK=$$(curl -s "$$AURL/api/v3/core/groups/?name=$$group" \
 	            -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
-	            | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0]['pk'] if r else '')" 2>/dev/null)
+	            | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0]['pk'] if r else '')" 2>/dev/null || true)
 	    fi
 	    if [ -n "$$GROUP_PK" ]; then
 	        ADD_HTTP=$$(curl -s -o /dev/null -w "%{http_code}" -X POST "$$AURL/api/v3/core/groups/$$GROUP_PK/add_user/" \
 	            -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
 	            -H "Content-Type: application/json" \
 	            -d "{\"pk\":$$USER_PK}")
+	        [ "$$ADD_HTTP" = "204" ] \
+	            || echo -e "  $(CY)WARN$(CX)  add_user returned HTTP $$ADD_HTTP for group $$group"
 	        echo -e "  $(CG)OK$(CX)    group $$group (pk=$$GROUP_PK) — blackie-chan added (HTTP $$ADD_HTTP)"
 	    else
 	        echo -e "  $(CY)WARN$(CX)  group $$group — could not create or locate"
@@ -453,20 +459,18 @@ authentik-setup: ## Create blackie-chan platform admin + all service groups in A
 	done
 	# ── Extract SonarQube SAML signing cert → write to root .env ─────────────
 	echo -n "  Extracting SonarQube SAML signing cert..."
-	SAML_PROVIDER_PK=$$(curl -s "$$AURL/api/v3/providers/saml/?name=SonarQube" \
+	SAML_KP_UUID=$$(curl -s "$$AURL/api/v3/providers/saml/?name=SonarQube" \
 	    -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
-	    | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('signing_kp','') if r else '')" 2>/dev/null || true)
-	if [ -n "$$SAML_PROVIDER_PK" ] && [ "$$SAML_PROVIDER_PK" != "None" ]; then
-	    CERT=$$(curl -s "$$AURL/api/v3/crypto/certificatekeypairs/$$SAML_PROVIDER_PK/view_certificate/" \
+	    | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); v=r[0].get('signing_kp') if r else None; print(v or '')" 2>/dev/null || true)
+	if [ -n "$$SAML_KP_UUID" ]; then
+	    CERT=$$(curl -s "$$AURL/api/v3/crypto/certificatekeypairs/$$SAML_KP_UUID/view_certificate/" \
 	        -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
 	        | python3 -c "import sys,json; print(json.load(sys.stdin).get('certificate',''))" 2>/dev/null || true)
 	    if [ -n "$$CERT" ]; then
 	        ONELINER=$$(echo "$$CERT" | tr -d '\n')
-	        if grep -q "^SONARQUBE_SAML_CERT=" "$(REPO)/.env" 2>/dev/null; then
-	            sed -i "s|^SONARQUBE_SAML_CERT=.*|SONARQUBE_SAML_CERT=$$ONELINER|" "$(REPO)/.env"
-	        else
-	            printf 'SONARQUBE_SAML_CERT=%s\n' "$$ONELINER" >> "$(REPO)/.env"
-	        fi
+	        { grep -v "^SONARQUBE_SAML_CERT=" "$(REPO)/.env" 2>/dev/null || true; \
+	          printf 'SONARQUBE_SAML_CERT=%s\n' "$$ONELINER"; } > "$(REPO)/.env.tmp" \
+	          && mv "$(REPO)/.env.tmp" "$(REPO)/.env"
 	        echo -e " $(CG)done$(CX)"
 	    else
 	        echo -e " $(CY)no cert returned — SonarQube deploy will need manual cert$(CX)"
