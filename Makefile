@@ -145,11 +145,12 @@ gen-secrets: ## Generate / fill all secrets in root .env (idempotent — never o
 	# ── Traefik dashboard htpasswd — derived from TRAEFIK_DASHBOARD_PASSWORD
 	# Source .env so TRAEFIK_DASHBOARD_PASSWORD is in scope for openssl
 	set -a; . "$(REPO)/.env"; set +a
-	if ! grep -q "^TRAEFIK_DASHBOARD_USERS=" "$(REPO)/.env" 2>/dev/null \
-	    || grep -qE "^TRAEFIK_DASHBOARD_USERS=[[:space:]]*$$" "$(REPO)/.env" 2>/dev/null; then
+	# Guard checks for the single-quoted form — catches both absent and previously
+	# written unquoted values (which cause "apr1: unbound variable" on source).
+	if ! grep -q "^TRAEFIK_DASHBOARD_USERS='" "$(REPO)/.env" 2>/dev/null; then
 	    HASH=$$(openssl passwd -apr1 "$$TRAEFIK_DASHBOARD_PASSWORD")
 	    USERS="admin:$$HASH"
-	    USERS="$$USERS" python3 -c "import os,re; v=os.environ['USERS']; c=open('$(REPO)/.env').read(); p=r'^TRAEFIK_DASHBOARD_USERS=.*'; c=re.sub(p,'TRAEFIK_DASHBOARD_USERS='+v,c,flags=re.MULTILINE) if re.search(p,c,re.MULTILINE) else c+'TRAEFIK_DASHBOARD_USERS='+v+'\n'; open('$(REPO)/.env','w').write(c)"
+	    USERS="$$USERS" python3 -c "import os,re; v=os.environ['USERS']; qv=\"'\" + v + \"'\"; c=open('$(REPO)/.env').read(); p=r'^TRAEFIK_DASHBOARD_USERS=.*'; c=re.sub(p,'TRAEFIK_DASHBOARD_USERS='+qv,c,flags=re.MULTILINE) if re.search(p,c,re.MULTILINE) else c+'TRAEFIK_DASHBOARD_USERS='+qv+'\n'; open('$(REPO)/.env','w').write(c)"
 	    printf "  $(CG)SET$(CX)  TRAEFIK_DASHBOARD_USERS\n"
 	fi
 	echo -e "$(CG)root .env ready.$(CX)  Set GIT_USER, GIT_TOKEN, DOCKER_USER/PASSWORD when needed."
