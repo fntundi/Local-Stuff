@@ -279,15 +279,27 @@ up: preflight submodules envs traefik authentik authentik-setup awx aistack home
 down: traefik-down authentik-down awx-down aistack-down homecam-down sentinel-home-down ## Stop all services (data volumes preserved)
 	@echo "All services stopped."
 
-destroy: ## Tear down everything — removes containers, volumes, and k3d clusters
+destroy: ## Tear down ALL services, volumes, networks, and generated files — full clean slate
 	@echo -e "$(CB)$(CR)Destroying all services and data...$(CX)"
-	-docker compose --project-name traefik-gw -f traefik/docker-compose.yml   down -v 2>/dev/null || true
-	-docker compose --project-name authentik   -f authentik/docker-compose.yml down -v 2>/dev/null || true
-	-docker compose --project-name awx         -f awx/docker-compose.yml       down -v 2>/dev/null || true
-	-$(MAKE) -C local-aistack down 2>/dev/null || true
-	-k3d cluster delete sentinel-noc  2>/dev/null || true
-	-k3d cluster delete sentinel-home 2>/dev/null || true
-	echo "Destroy complete."
+	[ -f "$(REPO)/.env" ] && { set -a; . "$(REPO)/.env"; set +a; } || true
+	# ── Docker Compose stacks (down -v removes containers + named volumes)
+	docker compose --project-name traefik-gw  -f traefik/docker-compose.yml   down -v --remove-orphans 2>/dev/null || true
+	docker compose --project-name authentik   -f authentik/docker-compose.yml down -v --remove-orphans 2>/dev/null || true
+	docker compose --project-name awx         -f awx/docker-compose.yml       down -v --remove-orphans 2>/dev/null || true
+	$(MAKE) -C local-aistack down 2>/dev/null || true
+	# ── k3d clusters
+	k3d cluster delete sentinel-noc  2>/dev/null || true
+	k3d cluster delete sentinel-home 2>/dev/null || true
+	# ── Docker networks created by the stacks
+	docker network rm home-net       2>/dev/null || true
+	docker network rm ai-home-shared 2>/dev/null || true
+	# ── Generated per-service and submodule env files
+	rm -f authentik/.env awx/.env traefik/.env
+	rm -f HomeCam/.env sentinel-home/.env
+	rm -f local-aistack/env/.env.prod
+	# ── Root .env last — keep secrets available until all services are torn down
+	rm -f "$(REPO)/.env"
+	echo -e "$(CG)Destroy complete.$(CX)  Run 'make preflight' to start fresh."
 
 show-credentials: ## Print all service URLs and credentials from root .env
 	@set -a; . "$(REPO)/.env"; set +a
