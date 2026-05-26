@@ -100,8 +100,12 @@ gen-secrets: ## Generate / fill all secrets in root .env (idempotent — never o
 	_s AUTHENTIK_PG_PASSWORD            "$$(h32)"
 	_s AUTHENTIK_BOOTSTRAP_PASSWORD     "$$(p24)"
 	_s AUTHENTIK_BOOTSTRAP_TOKEN        "$$(h40)"
+	# ── Authentik optional flags (explicit avoids compose fallback ambiguity)
+	_s AUTHENTIK_ERROR_REPORTING__ENABLED false
 	# ── blackie-chan (platform admin user)
 	_s BLACKIE_CHAN_PASSWORD             "$$(p24)"
+	# ── Traefik dashboard (password stored human-readable; hash generated below)
+	_s TRAEFIK_DASHBOARD_PASSWORD        "$$(p24)"
 	# ── AWX
 	_s AWX_VERSION                      24.6.0
 	_s AWX_HOST_PORT                    8052
@@ -136,6 +140,18 @@ gen-secrets: ## Generate / fill all secrets in root .env (idempotent — never o
 	_s GIT_TOKEN                        ""
 	_s DOCKER_USER                      ""
 	_s DOCKER_PASSWORD                  ""
+	# ── Cloudflare Tunnel (optional — leave blank if not using a tunnel)
+	_s CLOUDFLARE_TUNNEL_TOKEN          ""
+	# ── Traefik dashboard htpasswd — derived from TRAEFIK_DASHBOARD_PASSWORD
+	# Source .env so TRAEFIK_DASHBOARD_PASSWORD is in scope for openssl
+	set -a; . "$(REPO)/.env"; set +a
+	if ! grep -q "^TRAEFIK_DASHBOARD_USERS=" "$(REPO)/.env" 2>/dev/null \
+	    || grep -qE "^TRAEFIK_DASHBOARD_USERS=[[:space:]]*$$" "$(REPO)/.env" 2>/dev/null; then
+	    HASH=$$(openssl passwd -apr1 "$$TRAEFIK_DASHBOARD_PASSWORD")
+	    USERS="admin:$$HASH"
+	    USERS="$$USERS" python3 -c "import os,re; v=os.environ['USERS']; c=open('$(REPO)/.env').read(); p=r'^TRAEFIK_DASHBOARD_USERS=.*'; c=re.sub(p,'TRAEFIK_DASHBOARD_USERS='+v,c,flags=re.MULTILINE) if re.search(p,c,re.MULTILINE) else c+'TRAEFIK_DASHBOARD_USERS='+v+'\n'; open('$(REPO)/.env','w').write(c)"
+	    printf "  $(CG)SET$(CX)  TRAEFIK_DASHBOARD_USERS\n"
+	fi
 	echo -e "$(CG)root .env ready.$(CX)  Set GIT_USER, GIT_TOKEN, DOCKER_USER/PASSWORD when needed."
 
 submodules: ## Initialise and update all git submodules
@@ -254,6 +270,12 @@ show-credentials: ## Print all service URLs and credentials from root .env
 	echo    "  Jenkins        : https://leeeroyy.$$DOMAIN   (Authentik OIDC)"
 	echo    "  SonarQube      : https://sonarqube.$$DOMAIN  (Authentik SAML)"
 	echo    "  GitLab CE      : https://gitlab.$$DOMAIN     (Authentik OIDC)"
+	echo ""
+	echo -e "$(CB)  TRAEFIK DASHBOARD$(CX)"
+	echo    "  ─────────────────────────────────────────────────────────"
+	echo    "  URL            : https://traefik.$$DOMAIN"
+	echo    "  Username       : admin"
+	printf  "  Password       : $(CG)%s$(CX)\n" "$$TRAEFIK_DASHBOARD_PASSWORD"
 	echo ""
 	echo    "  Credentials file : $(REPO)/.env"
 	echo    "  Run 'make show-credentials' at any time to display this screen."
