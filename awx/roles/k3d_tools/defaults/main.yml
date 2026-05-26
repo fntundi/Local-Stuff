@@ -1,5 +1,5 @@
 ---
 kubectl_version: stable   # "stable" fetches latest stable from dl.k8s.io
-k3d_version: latest
-helm_version: latest
+k3d_version: v5.8.3
+helm_version: v3.20.1
 k9s_install: true

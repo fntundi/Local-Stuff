@@ -122,6 +122,10 @@
               type: string
               label: "Langfuse Encryption Key"
               secret: true
+            - id: vault_aistack_api_auth_password
+              type: string
+              label: "AI Platform API Login Password"
+              secret: true
             - id: vault_aistack_api_jwt_secret
               type: string
               label: "AI Platform API JWT Secret"
@@ -250,6 +254,7 @@
             vault_aistack_langfuse_nextauth_secret: "{{ '{{' }} vault_aistack_langfuse_nextauth_secret {{ '}}' }}"
             vault_aistack_langfuse_salt:      "{{ '{{' }} vault_aistack_langfuse_salt {{ '}}' }}"
             vault_aistack_langfuse_enc_key:   "{{ '{{' }} vault_aistack_langfuse_enc_key {{ '}}' }}"
+            vault_aistack_api_auth_password:  "{{ '{{' }} vault_aistack_api_auth_password {{ '}}' }}"
             vault_aistack_api_jwt_secret:     "{{ '{{' }} vault_aistack_api_jwt_secret {{ '}}' }}"
             vault_cloudflare_tunnel_token:    "{{ '{{' }} vault_cloudflare_tunnel_token {{ '}}' }}"
             vault_blackiefi_postgres_password: "{{ '{{' }} vault_blackiefi_postgres_password {{ '}}' }}"

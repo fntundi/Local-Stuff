@@ -4,3 +4,5 @@ aistack_project_name: ai-platform
 aistack_compose_files:
   - compose/docker-compose.yml
   - compose/docker-compose.prod.yml
+aistack_api_auth_username: api-admin
+aistack_api_auth_password: "{{ vault_aistack_api_auth_password }}"

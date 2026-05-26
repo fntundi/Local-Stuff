@@ -280,6 +280,8 @@ aistack_langfuse_public_key:   "{{ vault_aistack_langfuse_public_key }}"
 aistack_langfuse_nextauth_secret: "{{ vault_aistack_langfuse_nextauth_secret }}"
 aistack_langfuse_salt:         "{{ vault_aistack_langfuse_salt }}"
 aistack_langfuse_enc_key:      "{{ vault_aistack_langfuse_enc_key }}"
+aistack_api_auth_username:     api-admin
+aistack_api_auth_password:     "{{ vault_aistack_api_auth_password }}"
 aistack_api_jwt_secret:        "{{ vault_aistack_api_jwt_secret }}"
 cloudflare_tunnel_token:       "{{ vault_cloudflare_tunnel_token }}"
 

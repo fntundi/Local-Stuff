@@ -123,6 +123,8 @@ preflight: ## Verify tools + create/validate root .env (auto-generates missing s
 	_s AISTACK_LANGFUSE_NEXTAUTH_SECRET "$$(h32)"
 	_s AISTACK_LANGFUSE_SALT            "$$(h32)"
 	_s AISTACK_LANGFUSE_ENCRYPTION_KEY  "$$(h64)"
+	_s AISTACK_API_AUTH_USERNAME       api-admin
+	_s AISTACK_API_AUTH_PASSWORD       "$$(p24)"
 	_s AISTACK_API_JWT_SECRET           "$$(h32)"
 	# ── Git / Docker registry (fill in manually when needed)
 	_s GIT_REPO_URL                     git@github.com:fntundi/Local-Stuff.git
@@ -175,6 +177,8 @@ envs: ## Generate local-aistack .env.prod from root .env secrets
 	sed -i "s|^LANGFUSE_NEXTAUTH_SECRET=.*|LANGFUSE_NEXTAUTH_SECRET=$$AISTACK_LANGFUSE_NEXTAUTH_SECRET|"   "$$dst"
 	sed -i "s|^LANGFUSE_SALT=.*|LANGFUSE_SALT=$$AISTACK_LANGFUSE_SALT|"                                   "$$dst"
 	sed -i "s|^LANGFUSE_ENCRYPTION_KEY=.*|LANGFUSE_ENCRYPTION_KEY=$$AISTACK_LANGFUSE_ENCRYPTION_KEY|"      "$$dst"
+	sed -i "s|^API_AUTH_USERNAME=.*|API_AUTH_USERNAME=$$AISTACK_API_AUTH_USERNAME|"                         "$$dst"
+	sed -i "s|^API_AUTH_PASSWORD=.*|API_AUTH_PASSWORD=$$AISTACK_API_AUTH_PASSWORD|"                         "$$dst"
 	sed -i "s|^API_JWT_SECRET=.*|API_JWT_SECRET=$$AISTACK_API_JWT_SECRET|"                                 "$$dst"
 	echo -e "  $(CG)GEN$(CX)   $$dst"
 
@@ -226,6 +230,12 @@ show-credentials: ## Print all service URLs and credentials from root .env
 	echo    "  MLflow         : https://mlflow.$$DOMAIN"
 	echo    "  Langfuse       : https://langfuse.$$DOMAIN"
 	echo    "  LiteLLM        : https://litellm.$$DOMAIN"
+	echo ""
+	echo -e "$(CB)  API SERVER$(CX)"
+	echo    "  ─────────────────────────────────────────────────────────"
+	echo    "  URL            : https://api.$$DOMAIN"
+	echo    "  Username       : $$AISTACK_API_AUTH_USERNAME"
+	printf  "  Password       : $(CG)%s$(CX)\n" "$$AISTACK_API_AUTH_PASSWORD"
 	echo ""
 	echo -e "$(CB)  HomeCam$(CX)"
 	echo    "  ─────────────────────────────────────────────────────────"
