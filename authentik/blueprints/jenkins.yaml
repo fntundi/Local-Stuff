@@ -27,6 +27,8 @@ entries:
       authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-invalidation-flow]]
       client_type: confidential
+      client_id: !Env JENKINS_OIDC_CLIENT_ID
+      client_secret: !Env JENKINS_OIDC_CLIENT_SECRET
       redirect_uris: "https://leeeroyy.blackiechan.net/securityRealm/finishLogin"
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]

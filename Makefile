@@ -156,9 +156,13 @@ gen-secrets: ## Generate / fill all secrets in root .env (idempotent — never o
 	_s JENKINS_TRAEFIK_NETWORK          home-net
 	_s JENKINS_DOCKER_REGISTRY          ""
 	_s MINIO_ACCESS_KEY                 minioadmin
-	# ── Jenkins CI — blank until Authentik blueprints are imported
-	_s JENKINS_OIDC_CLIENT_ID           ""
-	_s JENKINS_OIDC_CLIENT_SECRET       ""
+	# ── Jenkins + GitLab OIDC — pre-generated; injected into Authentik via !Env blueprint tag
+	_s JENKINS_OIDC_CLIENT_ID           "$$(python3 -c 'import uuid; print(str(uuid.uuid4()))')"
+	_s JENKINS_OIDC_CLIENT_SECRET       "$$(h40)"
+	_s GITLAB_OIDC_CLIENT_ID            "$$(python3 -c 'import uuid; print(str(uuid.uuid4()))')"
+	_s GITLAB_OIDC_CLIENT_SECRET        "$$(h40)"
+	# ── SonarQube SAML cert — blank until authentik-setup extracts it from Authentik API
+	_s SONARQUBE_SAML_CERT              ""
 	# ── Jenkins CI — blank until SonarQube is deployed
 	_s SONARQUBE_TOKEN                  ""
 	# ── Jenkins CI kubeconfigs — blank until k8s clusters are ready
@@ -261,7 +265,7 @@ envs: gen-secrets ## Generate all secrets in root .env then produce all submodul
 	    echo -e "  $(CY)SKIP$(CX)  $$shenv already configured"
 	fi
 	# ── authentik/.env — filtered view of root .env for standalone docker compose use
-	grep -E "^(AUTHENTIK_|TZ=)" "$(REPO)/.env" > authentik/.env
+	grep -E "^(AUTHENTIK_|JENKINS_OIDC_|GITLAB_OIDC_|TZ=)" "$(REPO)/.env" > authentik/.env
 	echo -e "  $(CG)GEN$(CX)   authentik/.env"
 	# ── awx/.env
 	grep -E "^(AWX_|TZ=)" "$(REPO)/.env" > awx/.env
@@ -425,6 +429,29 @@ authentik-setup: ## Create blackie-chan platform admin + all service groups in A
 	        echo -e "  $(CY)WARN$(CX)  group $$group — could not create or locate"
 	    fi
 	done
+	# ── Extract SonarQube SAML signing cert → write to root .env ─────────────
+	echo -n "  Extracting SonarQube SAML signing cert..."
+	SAML_PROVIDER_PK=$$(curl -s "$$AURL/api/v3/providers/saml/?name=SonarQube" \
+	    -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
+	    | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('signing_kp','') if r else '')" 2>/dev/null || true)
+	if [ -n "$$SAML_PROVIDER_PK" ] && [ "$$SAML_PROVIDER_PK" != "None" ]; then
+	    CERT=$$(curl -s "$$AURL/api/v3/crypto/certificatekeypairs/$$SAML_PROVIDER_PK/view_certificate/" \
+	        -H "Authorization: Bearer $$AUTHENTIK_BOOTSTRAP_TOKEN" \
+	        | python3 -c "import sys,json; print(json.load(sys.stdin).get('certificate',''))" 2>/dev/null || true)
+	    if [ -n "$$CERT" ]; then
+	        ONELINER=$$(echo "$$CERT" | tr -d '\n')
+	        if grep -q "^SONARQUBE_SAML_CERT=" "$(REPO)/.env" 2>/dev/null; then
+	            sed -i "s|^SONARQUBE_SAML_CERT=.*|SONARQUBE_SAML_CERT=$$ONELINER|" "$(REPO)/.env"
+	        else
+	            printf 'SONARQUBE_SAML_CERT=%s\n' "$$ONELINER" >> "$(REPO)/.env"
+	        fi
+	        echo -e " $(CG)done$(CX)"
+	    else
+	        echo -e " $(CY)no cert returned — SonarQube deploy will need manual cert$(CX)"
+	    fi
+	else
+	    echo -e " $(CY)SonarQube provider not found (blueprint may not have applied yet)$(CX)"
+	fi
 
 traefik: ## Deploy Traefik (creates home-net 172.20.0.0/16, TLS termination)
 	@set -euo pipefail
